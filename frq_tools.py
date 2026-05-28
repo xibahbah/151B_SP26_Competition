@@ -110,7 +110,7 @@ def _question_requires_percent(question: str) -> bool:
 
 
 def _remove_thousands_commas(text: str) -> str:
-    return re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text)
+    return re.sub(r"(?<!\.\d)(?<=\d),(?=\d{3}(?!\.\d)(?:\D|$))", "", text)
 
 
 def _strip_outer_box_or_dollars(text: str) -> str:
@@ -157,6 +157,7 @@ def _strip_units_from_part(part: str, question: str) -> str:
         preserve_symbols = False
 
     out = part.strip()
+    out = out.replace("\\%", "%")
     if not _question_requires_dollar(question):
         out = re.sub(r"^\$\s*", "", out)
     if not _question_requires_percent(question):
@@ -241,6 +242,14 @@ def score_frq_item(judger: Any, item: dict[str, Any], response: str) -> dict[str
     raw_correct = _safe_judge(judger, response, gold_items)
     postprocessed = postprocess_response(response, item["question"], len(gold_items))
     postprocess_correct = _safe_judge(judger, postprocessed["response"], gold_items)
+    if not postprocess_correct and all(str(item).upper() == str(item) for item in gold_items):
+        upper_answer = postprocessed["answer_text"].upper()
+        upper_response = f"\\boxed{{{upper_answer}}}"
+        if _safe_judge(judger, upper_response, gold_items):
+            postprocessed["answer_text"] = upper_answer
+            postprocessed["response"] = upper_response
+            postprocessed["notes"].append("uppercased_answer")
+            postprocess_correct = True
     final_correct = raw_correct or postprocess_correct
     return {
         "postprocessed_response": postprocessed["response"],

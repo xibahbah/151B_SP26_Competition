@@ -63,18 +63,10 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def extract_letter(text: str) -> str:
-    patterns = [
-        r"\\boxed\{\s*([A-J])\s*\}",
-        r"Final Answer\s*:?\s*(?:\$\$)?\s*(?:\\boxed\{)?\s*([A-J])\b",
-        r"correct (?:answer|option) is\s*:?\s*(?:\*\*)?([A-J])\b",
-        r"(?:answer|option)\s+(?:is\s+)?(?:\*\*)?([A-J])\b",
-        r"\*\*([A-J])\.\*\*",
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-        if matches:
-            return matches[-1].upper()
-    matches = re.findall(r"\b([A-J])\b", text.upper())
+    match = re.search(r"\\boxed\{([A-Za-z])\}", text)
+    if match:
+        return match.group(1).upper()
+    matches = re.findall(r"\b([A-Z])\b", text.upper())
     return matches[-1] if matches else ""
 
 
