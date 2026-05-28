@@ -92,9 +92,9 @@ def main() -> None:
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(
         max_tokens=args.max_tokens,
-        temperature=0.6,
-        top_p=0.95,
-        top_k=20,
+        temperature=0.0,
+        top_p=1.0,
+        top_k=-1,
         min_p=0.0,
         presence_penalty=0.0,
         repetition_penalty=1.0,
