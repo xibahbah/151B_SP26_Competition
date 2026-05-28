@@ -63,6 +63,7 @@ def main() -> None:
     parser.add_argument("--lora-path", default=None)
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
+    parser.add_argument("--ids-file", default=None, help="JSON file containing item IDs to evaluate.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
@@ -73,6 +74,9 @@ def main() -> None:
     os.environ.setdefault("VLLM_USE_V1", "0")
 
     data = [row for row in read_jsonl(Path(args.data)) if not row.get("options")]
+    if args.ids_file:
+        ids = set(json.loads(Path(args.ids_file).read_text()))
+        data = [row for row in data if row["id"] in ids]
     sample_seed = int(time.time_ns() % (2**32)) if args.seed < 0 else args.seed
     if args.sample_size is not None:
         rng = random.Random(sample_seed)

@@ -75,6 +75,18 @@ python scripts/prepare_sft_data.py \
   --output data/train_sft_frq.jsonl
 ```
 
+Create a fixed public-FRQ holdout before LoRA experiments:
+
+```bash
+python scripts/split_public_frq_holdout.py \
+  --seed 151 \
+  --holdout-size 200 \
+  --train-output data/public_frq_train.jsonl \
+  --holdout-output data/public_frq_holdout.jsonl \
+  --holdout-ids-output data/public_frq_holdout_ids.json \
+  --sft-output data/public_frq_train_sft.jsonl
+```
+
 Prepare external FRQ-style math data without downloading the full dataset:
 
 ```bash
@@ -105,11 +117,12 @@ python scripts/train_lora.py \
   --output-dir outputs/qwen-frq-lora
 ```
 
-Evaluate the LoRA adapter:
+Evaluate the LoRA adapter on the fixed holdout:
 
 ```bash
 python scripts/eval_frq_vllm.py \
   --lora-path outputs/qwen-frq-lora \
-  --output results/frq_lora_full.jsonl \
-  --errors results/frq_lora_errors.jsonl
+  --ids-file data/public_frq_holdout_ids.json \
+  --output results/frq_lora_holdout.jsonl \
+  --errors results/frq_lora_holdout_errors.jsonl
 ```
