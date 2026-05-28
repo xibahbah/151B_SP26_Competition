@@ -63,6 +63,8 @@ python scripts/prepare_external_math_sft.py \
   --preset math \
   --sample-size 2000 \
   --assistant-mode final \
+  --min-level 3 \
+  --balanced-by-topic \
   --output data/external_math_sft_2k.jsonl
 ```
 

@@ -128,8 +128,47 @@ def looks_like_mcq(problem: str) -> bool:
     return any(re.search(pattern, problem, flags=re.IGNORECASE) for pattern in patterns)
 
 
+def parse_math_level(level: Any) -> int | None:
+    match = re.search(r"\d+", clean_text(level))
+    return int(match.group(0)) if match else None
+
+
+def split_csv_filter(value: str | None) -> set[str] | None:
+    if not value:
+        return None
+    return {item.strip().lower() for item in value.split(",") if item.strip()}
+
+
+def topic_key(row: dict[str, Any]) -> str:
+    for key in ("type", "problem_type", "question_type", "source"):
+        value = clean_text(row.get(key))
+        if value:
+            return value.lower()
+    return "unknown"
+
+
+def passes_metadata_filters(row: dict[str, Any], args: argparse.Namespace) -> bool:
+    allowed_topics = split_csv_filter(args.allowed_topics)
+    blocked_topics = split_csv_filter(args.blocked_topics)
+    topic = topic_key(row)
+    if allowed_topics and topic not in allowed_topics:
+        return False
+    if blocked_topics and topic in blocked_topics:
+        return False
+
+    level = parse_math_level(row.get("level"))
+    if args.min_level is not None and level is not None and level < args.min_level:
+        return False
+    if args.max_level is not None and level is not None and level > args.max_level:
+        return False
+    return True
+
+
 def candidate_records(dataset: Iterable[dict[str, Any]], args: argparse.Namespace) -> Iterable[dict[str, Any]]:
     for row in dataset:
+        if not passes_metadata_filters(row, args):
+            continue
+
         problem = clean_text(row.get(args.problem_field))
         solution = clean_text(row.get(args.solution_field))
         answer = clean_answer(row.get(args.answer_field) if args.answer_field else None, solution)
@@ -154,6 +193,8 @@ def candidate_records(dataset: Iterable[dict[str, Any]], args: argparse.Namespac
             "source": args.dataset,
             "source_config": args.config,
             "source_split": args.split,
+            "topic": topic_key(row),
+            "level": clean_text(row.get("level")),
             "messages": [
                 {"role": "system", "content": FRQ_SYSTEM_PROMPT},
                 {"role": "user", "content": problem},
@@ -177,6 +218,42 @@ def reservoir_sample(records: Iterable[dict[str, Any]], sample_size: int, seed: 
     return sample
 
 
+def balanced_sample(records: Iterable[dict[str, Any]], sample_size: int, seed: int) -> list[dict[str, Any]]:
+    rng = random.Random(seed)
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    per_bucket_seen: dict[str, int] = {}
+    max_per_bucket = max(1, sample_size)
+
+    for record in records:
+        bucket = str(record.get("topic") or "unknown")
+        seen = per_bucket_seen.get(bucket, 0) + 1
+        per_bucket_seen[bucket] = seen
+        items = buckets.setdefault(bucket, [])
+        if len(items) < max_per_bucket:
+            items.append(record)
+        else:
+            j = rng.randrange(seen)
+            if j < max_per_bucket:
+                items[j] = record
+
+    sample = []
+    active_topics = [topic for topic, items in buckets.items() if items]
+    rng.shuffle(active_topics)
+    while len(sample) < sample_size and active_topics:
+        next_active = []
+        for topic in active_topics:
+            items = buckets[topic]
+            if items and len(sample) < sample_size:
+                sample.append(items.pop(rng.randrange(len(items))))
+            if items:
+                next_active.append(topic)
+        active_topics = next_active
+        rng.shuffle(active_topics)
+
+    rng.shuffle(sample)
+    return sample
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--preset", choices=sorted(PRESETS), default="math")
@@ -194,6 +271,11 @@ def main() -> None:
     parser.add_argument("--max-problem-chars", type=int, default=2500)
     parser.add_argument("--max-solution-chars", type=int, default=12000)
     parser.add_argument("--include-mcq-like", action="store_true")
+    parser.add_argument("--min-level", type=int, default=None, help="For MATH-style levels, keep level >= this value.")
+    parser.add_argument("--max-level", type=int, default=None, help="For MATH-style levels, keep level <= this value.")
+    parser.add_argument("--allowed-topics", default=None, help="Comma-separated normalized topics/types to keep.")
+    parser.add_argument("--blocked-topics", default=None, help="Comma-separated normalized topics/types to skip.")
+    parser.add_argument("--balanced-by-topic", action="store_true", help="Round-robin sample across topic/type buckets.")
     args = parser.parse_args()
 
     preset = PRESETS[args.preset]
@@ -208,7 +290,11 @@ def main() -> None:
         load_kwargs["name"] = args.config
     dataset = load_dataset(**load_kwargs)
 
-    records = reservoir_sample(candidate_records(dataset, args), args.sample_size, args.seed)
+    candidates = candidate_records(dataset, args)
+    if args.balanced_by_topic:
+        records = balanced_sample(candidates, args.sample_size, args.seed)
+    else:
+        records = reservoir_sample(candidates, args.sample_size, args.seed)
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
