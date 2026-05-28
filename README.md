@@ -56,11 +56,31 @@ python scripts/prepare_sft_data.py \
   --output data/train_sft_frq.jsonl
 ```
 
+Prepare external FRQ-style math data without downloading the full dataset:
+
+```bash
+python scripts/prepare_external_math_sft.py \
+  --preset math \
+  --sample-size 2000 \
+  --assistant-mode final \
+  --output data/external_math_sft_2k.jsonl
+```
+
+For a larger reasoning dataset, stream a small sample from OpenR1:
+
+```bash
+python scripts/prepare_external_math_sft.py \
+  --preset openr1 \
+  --sample-size 2000 \
+  --assistant-mode final \
+  --output data/openr1_math_sft_2k.jsonl
+```
+
 Train the LoRA adapter:
 
 ```bash
 python scripts/train_lora.py \
-  --train-file data/train_sft_frq.jsonl \
+  --train-file data/external_math_sft_2k.jsonl \
   --output-dir outputs/qwen-frq-lora
 ```
 
