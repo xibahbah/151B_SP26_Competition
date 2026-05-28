@@ -39,11 +39,35 @@ def build_user_prompt(question: str, options: list[str]) -> str:
 
 
 def extract_letter(text: str) -> str:
-    boxed = re.search(r"\\boxed\{([A-Za-z])\}", text)
-    if boxed:
-        return boxed.group(1).upper()
-    matches = re.findall(r"\b([A-Z])\b", text.upper())
+    patterns = [
+        r"\\boxed\{\s*([A-J])\s*\}",
+        r"Final Answer\s*:?\s*(?:\$\$)?\s*(?:\\boxed\{)?\s*([A-J])\b",
+        r"correct (?:answer|option) is\s*:?\s*(?:\*\*)?([A-J])\b",
+        r"(?:answer|option)\s+(?:is\s+)?(?:\*\*)?([A-J])\b",
+        r"\*\*([A-J])\.\*\*",
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if matches:
+            return matches[-1].upper()
+    matches = re.findall(r"\b([A-J])\b", text.upper())
     return matches[-1] if matches else ""
+
+
+def apply_chat_template(tokenizer, messages: list[dict]) -> str:
+    try:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
 
 def main() -> None:
@@ -55,7 +79,7 @@ def main() -> None:
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=151)
     parser.add_argument("--batch-size", type=int, default=5)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=768)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
     parser.add_argument("--max-model-len", type=int, default=8192)
@@ -93,13 +117,12 @@ def main() -> None:
 
     prompts = []
     for item in data:
-        prompt = tokenizer.apply_chat_template(
+        prompt = apply_chat_template(
+            tokenizer,
             [
                 {"role": "system", "content": SYSTEM_PROMPT_MCQ},
                 {"role": "user", "content": build_user_prompt(item["question"], item["options"])},
             ],
-            tokenize=False,
-            add_generation_prompt=True,
         )
         prompts.append(prompt)
 

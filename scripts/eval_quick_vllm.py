@@ -46,7 +46,8 @@ Final response must end with exactly one line and no trailing explanation:
 SYSTEM_PROMPT_MCQ = (
     "You are an expert mathematician. "
     "Read the problem and the answer choices below, then select the single best answer. "
-    "Output ONLY the letter of your chosen option inside \\boxed{}, e.g. \\boxed{C}."
+    "Do not show your reasoning. Output ONLY the letter of your chosen option inside "
+    "\\boxed{}, e.g. \\boxed{C}."
 )
 
 
@@ -62,10 +63,18 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def extract_letter(text: str) -> str:
-    boxed = re.search(r"\\boxed\{([A-Za-z])\}", text)
-    if boxed:
-        return boxed.group(1).upper()
-    matches = re.findall(r"\b([A-Z])\b", text.upper())
+    patterns = [
+        r"\\boxed\{\s*([A-J])\s*\}",
+        r"Final Answer\s*:?\s*(?:\$\$)?\s*(?:\\boxed\{)?\s*([A-J])\b",
+        r"correct (?:answer|option) is\s*:?\s*(?:\*\*)?([A-J])\b",
+        r"(?:answer|option)\s+(?:is\s+)?(?:\*\*)?([A-J])\b",
+        r"\*\*([A-J])\.\*\*",
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if matches:
+            return matches[-1].upper()
+    matches = re.findall(r"\b([A-J])\b", text.upper())
     return matches[-1] if matches else ""
 
 
@@ -77,6 +86,20 @@ def build_prompt(item: dict) -> tuple[str, str]:
         )
         return SYSTEM_PROMPT_MCQ, f"{item['question']}\n\nOptions:\n{opts_text}"
     return SYSTEM_PROMPT_MATH, item["question"]
+
+
+def apply_chat_template(tokenizer, messages: list[dict], *, enable_thinking: bool | None = None) -> str:
+    kwargs = {
+        "tokenize": False,
+        "add_generation_prompt": True,
+    }
+    if enable_thinking is not None:
+        kwargs["enable_thinking"] = enable_thinking
+    try:
+        return tokenizer.apply_chat_template(messages, **kwargs)
+    except TypeError:
+        kwargs.pop("enable_thinking", None)
+        return tokenizer.apply_chat_template(messages, **kwargs)
 
 
 def sample_rows(rows: list[dict], sample_size: int | None, rng: random.Random) -> list[dict]:
@@ -95,7 +118,8 @@ def main() -> None:
     parser.add_argument("--frq-sample-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=151)
     parser.add_argument("--batch-size", type=int, default=5)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--frq-max-tokens", type=int, default=4096)
+    parser.add_argument("--mcq-max-tokens", type=int, default=768)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
     parser.add_argument("--max-model-len", type=int, default=8192)
@@ -124,8 +148,8 @@ def main() -> None:
         max_num_batched_tokens=args.max_model_len,
     )
     tokenizer = llm.get_tokenizer()
-    sampling_params = SamplingParams(
-        max_tokens=args.max_tokens,
+    frq_sampling_params = SamplingParams(
+        max_tokens=args.frq_max_tokens,
         temperature=args.temperature,
         top_p=1.0 if args.temperature == 0.0 else 0.95,
         top_k=-1 if args.temperature == 0.0 else 20,
@@ -133,27 +157,56 @@ def main() -> None:
         presence_penalty=0.0,
         repetition_penalty=1.0,
     )
+    mcq_sampling_params = SamplingParams(
+        max_tokens=args.mcq_max_tokens,
+        temperature=0.0,
+        top_p=1.0,
+        top_k=-1,
+        min_p=0.0,
+        presence_penalty=0.0,
+        repetition_penalty=1.0,
+    )
 
-    prompts = []
-    for item in data:
+    mcq_prompts = []
+    for item in mcq_rows:
         system, user = build_prompt(item)
-        prompts.append(
-            tokenizer.apply_chat_template(
+        mcq_prompts.append(
+            apply_chat_template(
+                tokenizer,
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                tokenize=False,
-                add_generation_prompt=True,
+                enable_thinking=False,
             )
         )
 
-    responses = []
-    for start in tqdm(range(0, len(prompts), args.batch_size), desc="Generating"):
-        batch = prompts[start : start + args.batch_size]
-        outputs = llm.generate(batch, sampling_params=sampling_params)
-        responses.extend(output.outputs[0].text.strip() for output in outputs)
+    frq_prompts = []
+    for item in frq_rows:
+        system, user = build_prompt(item)
+        frq_prompts.append(
+            apply_chat_template(
+                tokenizer,
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            )
+        )
+
+    mcq_responses = []
+    for start in tqdm(range(0, len(mcq_prompts), args.batch_size), desc="Generating MCQ"):
+        batch = mcq_prompts[start : start + args.batch_size]
+        outputs = llm.generate(batch, sampling_params=mcq_sampling_params)
+        mcq_responses.extend(output.outputs[0].text.strip() for output in outputs)
+
+    frq_responses = []
+    for start in tqdm(range(0, len(frq_prompts), args.batch_size), desc="Generating FRQ"):
+        batch = frq_prompts[start : start + args.batch_size]
+        outputs = llm.generate(batch, sampling_params=frq_sampling_params)
+        frq_responses.extend(output.outputs[0].text.strip() for output in outputs)
 
     judger = Judger(strict_extract=False)
     results = []
-    for item, response in tqdm(zip(data, responses), total=len(data), desc="Scoring"):
+    for item, response in tqdm(
+        list(zip(mcq_rows, mcq_responses)) + list(zip(frq_rows, frq_responses)),
+        total=len(data),
+        desc="Scoring",
+    ):
         is_mcq = bool(item.get("options"))
         if is_mcq:
             pred = extract_letter(response)
