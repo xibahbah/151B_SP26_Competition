@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from frq_tools import score_frq_item
+from frq_tools import postprocess_response, score_frq_item
 from judger import Judger
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
@@ -129,28 +129,47 @@ def main() -> None:
         outputs = llm.generate(batch, sampling_params=sampling_params, lora_request=lora_request)
         responses.extend(output.outputs[0].text.strip() for output in outputs)
 
-    judger = Judger(strict_extract=False)
+    has_gold = all("answer" in item for item in data)
+    judger = Judger(strict_extract=False) if has_gold else None
     results = []
     for item, response in tqdm(zip(data, responses), total=len(data), desc="Scoring"):
-        score_info = score_frq_item(judger, item, response)
+        if has_gold:
+            score_info = score_frq_item(judger, item, response)
+            gold_fields = {"gold": item["answer"]}
+        else:
+            expected_count = max(1, item["question"].count("[ANS]"))
+            post = postprocess_response(response, item["question"], expected_count)
+            score_info = {
+                "raw_correct": None,
+                "postprocess_correct": None,
+                "correct": None,
+                "postprocessed_response": post["response"],
+                "postprocessed_answer": post["answer_text"],
+                "postprocess_notes": post["notes"],
+                "error_type": "unscored",
+            }
+            gold_fields = {}
         results.append({
             "id": item["id"],
             "is_mcq": False,
-            "gold": item["answer"],
             "response": response,
             "sample_seed": sample_seed,
+            **gold_fields,
             **score_info,
         })
 
-    errors = [row for row in results if not row["correct"]]
+    errors = [row for row in results if row["correct"] is False]
     write_jsonl(Path(args.output), results)
     write_jsonl(Path(args.errors), errors)
 
-    raw_correct = sum(row["raw_correct"] for row in results)
-    final_correct = sum(row["correct"] for row in results)
     total = len(results)
-    print(f"Raw FRQ accuracy: {raw_correct}/{total} ({raw_correct / total * 100:.2f}%)")
-    print(f"Postprocessed FRQ accuracy: {final_correct}/{total} ({final_correct / total * 100:.2f}%)")
+    if has_gold:
+        raw_correct = sum(row["raw_correct"] for row in results)
+        final_correct = sum(row["correct"] for row in results)
+        print(f"Raw FRQ accuracy: {raw_correct}/{total} ({raw_correct / total * 100:.2f}%)")
+        print(f"Postprocessed FRQ accuracy: {final_correct}/{total} ({final_correct / total * 100:.2f}%)")
+    else:
+        print(f"FRQ private inference complete: {total} predictions")
     print(f"Wrote {args.output}")
     print(f"Wrote {args.errors}")
 

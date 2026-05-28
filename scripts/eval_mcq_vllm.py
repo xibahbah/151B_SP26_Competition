@@ -120,31 +120,41 @@ def main() -> None:
             outputs = llm.generate(batch, sampling_params=sampling_params)
             responses.extend(output.outputs[0].text.strip() for output in outputs)
 
+    has_gold = all("answer" in item for item in data)
     results = []
     for item, response in zip(data, responses):
         pred = extract_letter(response)
-        gold = str(item["answer"]).strip().upper()
-        correct = pred == gold
-        results.append(
-            {
-                "id": item["id"],
-                "is_mcq": True,
+        row = {
+            "id": item["id"],
+            "is_mcq": True,
+            "response": response,
+            "postprocessed_response": f"\\boxed{{{pred}}}" if pred else response,
+            "postprocessed_answer": pred,
+            "predicted_letter": pred,
+            "sample_seed": sample_seed,
+        }
+        if has_gold:
+            gold = str(item["answer"]).strip().upper()
+            correct = pred == gold
+            row.update({
                 "gold": gold,
-                "response": response,
-                "predicted_letter": pred,
                 "correct": correct,
                 "error_type": "correct" if correct else "wrong_letter",
-                "sample_seed": sample_seed,
-            }
-        )
+            })
+        else:
+            row.update({"correct": None, "error_type": "unscored"})
+        results.append(row)
 
-    errors = [row for row in results if not row["correct"]]
+    errors = [row for row in results if row["correct"] is False]
     write_jsonl(Path(args.output), results)
     write_jsonl(Path(args.errors), errors)
 
-    correct = sum(row["correct"] for row in results)
     total = len(results)
-    print(f"MCQ accuracy: {correct}/{total} ({correct / total * 100:.2f}%)")
+    if has_gold:
+        correct = sum(row["correct"] for row in results)
+        print(f"MCQ accuracy: {correct}/{total} ({correct / total * 100:.2f}%)")
+    else:
+        print(f"MCQ private inference complete: {total} predictions")
     print(f"Wrote {args.output}")
     print(f"Wrote {args.errors}")
 
