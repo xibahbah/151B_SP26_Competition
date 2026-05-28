@@ -55,13 +55,15 @@ def main() -> None:
     parser.add_argument("--model-id", default="Qwen/Qwen3-4B-Thinking-2507")
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
-    parser.add_argument("--batch-size", type=int, default=5)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--batch-size", type=int, default=None, help="Defaults to all prompts in one vLLM call, matching the starter notebook.")
+    parser.add_argument("--max-tokens", type=int, default=32768)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
-    parser.add_argument("--max-model-len", type=int, default=8192)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.50)
+    parser.add_argument("--max-model-len", type=int, default=16384)
+    parser.add_argument("--max-num-seqs", type=int, default=256)
+    parser.add_argument("--max-num-batched-tokens", type=int, default=32768)
     args = parser.parse_args()
 
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -82,8 +84,8 @@ def main() -> None:
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
         trust_remote_code=True,
-        max_num_seqs=4,
-        max_num_batched_tokens=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+        max_num_batched_tokens=args.max_num_batched_tokens,
     )
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(
@@ -109,10 +111,14 @@ def main() -> None:
         prompts.append(prompt)
 
     responses = []
-    for start in tqdm(range(0, len(prompts), args.batch_size), desc="Generating"):
-        batch = prompts[start : start + args.batch_size]
-        outputs = llm.generate(batch, sampling_params=sampling_params)
-        responses.extend(output.outputs[0].text.strip() for output in outputs)
+    if args.batch_size is None:
+        outputs = llm.generate(prompts, sampling_params=sampling_params)
+        responses = [output.outputs[0].text.strip() for output in outputs]
+    else:
+        for start in tqdm(range(0, len(prompts), args.batch_size), desc="Generating"):
+            batch = prompts[start : start + args.batch_size]
+            outputs = llm.generate(batch, sampling_params=sampling_params)
+            responses.extend(output.outputs[0].text.strip() for output in outputs)
 
     results = []
     for item, response in zip(data, responses):

@@ -105,13 +105,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--frq-max-tokens", type=int, default=4096)
-    parser.add_argument("--mcq-max-tokens", type=int, default=4096)
+    parser.add_argument("--mcq-max-tokens", type=int, default=32768)
     parser.add_argument("--frq-temperature", type=float, default=0.0)
     parser.add_argument("--mcq-temperature", type=float, default=0.6)
     parser.add_argument("--mcq-top-p", type=float, default=0.95)
     parser.add_argument("--mcq-top-k", type=int, default=20)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
-    parser.add_argument("--max-model-len", type=int, default=8192)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.50)
+    parser.add_argument("--max-model-len", type=int, default=16384)
+    parser.add_argument("--max-num-seqs", type=int, default=256)
+    parser.add_argument("--max-num-batched-tokens", type=int, default=32768)
     args = parser.parse_args()
 
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
@@ -135,8 +137,8 @@ def main() -> None:
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
         trust_remote_code=True,
-        max_num_seqs=4,
-        max_num_batched_tokens=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+        max_num_batched_tokens=args.max_num_batched_tokens,
     )
     tokenizer = llm.get_tokenizer()
     frq_sampling_params = SamplingParams(
