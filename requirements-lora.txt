@@ -1,0 +1,12 @@
+vllm==0.8.5.post1
+transformers>=4.51,<4.54
+tokenizers>=0.21,<0.22
+bitsandbytes
+datasets
+peft
+trl
+accelerate
+sympy
+numpy
+tqdm
+antlr4-python3-runtime==4.11.1
