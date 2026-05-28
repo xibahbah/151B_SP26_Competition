@@ -55,22 +55,6 @@ def extract_letter(text: str) -> str:
     return matches[-1] if matches else ""
 
 
-def apply_chat_template(tokenizer, messages: list[dict]) -> str:
-    try:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-    except TypeError:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="data/public.jsonl")
@@ -80,8 +64,10 @@ def main() -> None:
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
     parser.add_argument("--batch-size", type=int, default=5)
-    parser.add_argument("--max-tokens", type=int, default=768)
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--temperature", type=float, default=0.6)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
     parser.add_argument("--max-model-len", type=int, default=8192)
     args = parser.parse_args()
@@ -111,8 +97,8 @@ def main() -> None:
     sampling_params = SamplingParams(
         max_tokens=args.max_tokens,
         temperature=args.temperature,
-        top_p=1.0 if args.temperature == 0.0 else 0.95,
-        top_k=-1 if args.temperature == 0.0 else 20,
+        top_p=args.top_p,
+        top_k=args.top_k,
         min_p=0.0,
         presence_penalty=0.0,
         repetition_penalty=1.0,
@@ -120,12 +106,13 @@ def main() -> None:
 
     prompts = []
     for item in data:
-        prompt = apply_chat_template(
-            tokenizer,
+        prompt = tokenizer.apply_chat_template(
             [
                 {"role": "system", "content": SYSTEM_PROMPT_MCQ},
                 {"role": "user", "content": build_user_prompt(item["question"], item["options"])},
             ],
+            tokenize=False,
+            add_generation_prompt=True,
         )
         prompts.append(prompt)
 

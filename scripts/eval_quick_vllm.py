@@ -88,18 +88,12 @@ def build_prompt(item: dict) -> tuple[str, str]:
     return SYSTEM_PROMPT_MATH, item["question"]
 
 
-def apply_chat_template(tokenizer, messages: list[dict], *, enable_thinking: bool | None = None) -> str:
+def apply_chat_template(tokenizer, messages: list[dict]) -> str:
     kwargs = {
         "tokenize": False,
         "add_generation_prompt": True,
     }
-    if enable_thinking is not None:
-        kwargs["enable_thinking"] = enable_thinking
-    try:
-        return tokenizer.apply_chat_template(messages, **kwargs)
-    except TypeError:
-        kwargs.pop("enable_thinking", None)
-        return tokenizer.apply_chat_template(messages, **kwargs)
+    return tokenizer.apply_chat_template(messages, **kwargs)
 
 
 def sample_rows(rows: list[dict], sample_size: int | None, rng: random.Random) -> list[dict]:
@@ -119,8 +113,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--frq-max-tokens", type=int, default=4096)
-    parser.add_argument("--mcq-max-tokens", type=int, default=768)
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--mcq-max-tokens", type=int, default=4096)
+    parser.add_argument("--frq-temperature", type=float, default=0.0)
+    parser.add_argument("--mcq-temperature", type=float, default=0.6)
+    parser.add_argument("--mcq-top-p", type=float, default=0.95)
+    parser.add_argument("--mcq-top-k", type=int, default=20)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
     parser.add_argument("--max-model-len", type=int, default=8192)
     args = parser.parse_args()
@@ -152,18 +149,18 @@ def main() -> None:
     tokenizer = llm.get_tokenizer()
     frq_sampling_params = SamplingParams(
         max_tokens=args.frq_max_tokens,
-        temperature=args.temperature,
-        top_p=1.0 if args.temperature == 0.0 else 0.95,
-        top_k=-1 if args.temperature == 0.0 else 20,
+        temperature=args.frq_temperature,
+        top_p=1.0 if args.frq_temperature == 0.0 else 0.95,
+        top_k=-1 if args.frq_temperature == 0.0 else 20,
         min_p=0.0,
         presence_penalty=0.0,
         repetition_penalty=1.0,
     )
     mcq_sampling_params = SamplingParams(
         max_tokens=args.mcq_max_tokens,
-        temperature=0.0,
-        top_p=1.0,
-        top_k=-1,
+        temperature=args.mcq_temperature,
+        top_p=args.mcq_top_p,
+        top_k=args.mcq_top_k,
         min_p=0.0,
         presence_penalty=0.0,
         repetition_penalty=1.0,
@@ -176,7 +173,6 @@ def main() -> None:
             apply_chat_template(
                 tokenizer,
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                enable_thinking=False,
             )
         )
 
