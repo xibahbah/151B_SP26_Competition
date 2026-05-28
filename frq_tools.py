@@ -121,6 +121,67 @@ def _strip_outer_box_or_dollars(text: str) -> str:
     return text
 
 
+def _latex_frac_to_plain(text: str) -> str:
+    patterns = ("\\dfrac", "\\frac")
+    for command in patterns:
+        start = 0
+        while True:
+            idx = text.find(command + "{", start)
+            if idx < 0:
+                break
+            first_start = idx + len(command)
+            first = _read_braced(text, first_start)
+            if first is None:
+                start = idx + 1
+                continue
+            numerator, first_end = first
+            second = _read_braced(text, first_end)
+            if second is None:
+                start = first_end
+                continue
+            denominator, second_end = second
+            text = text[:idx] + f"({numerator})/({denominator})" + text[second_end:]
+            start = idx + 1
+    return text
+
+
+def _read_braced(text: str, brace_idx: int) -> tuple[str, int] | None:
+    if brace_idx >= len(text) or text[brace_idx] != "{":
+        return None
+    depth = 1
+    i = brace_idx + 1
+    while i < len(text) and depth > 0:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        return None
+    return text[brace_idx + 1 : i - 1], i
+
+
+def _normalize_latex_math(text: str) -> str:
+    text = text.replace("\\left", "").replace("\\right", "")
+    text = text.replace("\\,", "")
+    text = text.replace("\\cdot", "*").replace("\\times", "*")
+    text = text.replace("\\pi", "pi")
+    text = text.replace("\\infty", "infinity")
+    text = text.replace("\\ln", "ln")
+    text = text.replace("\\log", "log")
+    text = text.replace("\\sin", "sin")
+    text = text.replace("\\cos", "cos")
+    text = text.replace("\\tan", "tan")
+    text = text.replace("\\sqrt", "sqrt")
+    text = _latex_frac_to_plain(text)
+    text = re.sub(r"([A-Za-z0-9_)])\^\{([^{}]+)\}", r"\1^(\2)", text)
+    text = re.sub(r"\be\^\(?([^),\s]+)\)?", r"e^(\1)", text)
+    text = re.sub(r"(?<=\))(?=\()", "*", text)
+    text = re.sub(r"(?<=\d)(?=[A-Za-z(])", "*", text)
+    text = re.sub(r"(?<=[A-Za-z)])(?=\d)", "*", text)
+    return text
+
+
 def _normalize_separators(text: str, expected_count: int) -> str:
     text = text.replace("|||", ",")
     if expected_count > 1:
@@ -170,6 +231,10 @@ def _strip_units_from_part(part: str, question: str) -> str:
 def postprocess_response(response: str, question: str, expected_count: int) -> dict[str, Any]:
     answer_text, notes = extract_final_answer_text(response)
     answer_text = _strip_outer_box_or_dollars(answer_text)
+    normalized = _normalize_latex_math(answer_text)
+    if normalized != answer_text:
+        answer_text = normalized
+        notes.append("normalized_latex_math")
     answer_text = _remove_thousands_commas(answer_text)
     answer_text = _normalize_separators(answer_text, expected_count)
     parts = _split_top_level_commas(answer_text) if expected_count > 1 else [answer_text.strip()]
