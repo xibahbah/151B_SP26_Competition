@@ -1,0 +1,285 @@
+CSE 151B Competition Work Log
+Date: 2026-05-28
+
+This is a reconstructed chat/work log from the session. It is not a raw UI export, but it captures the key decisions, commands, files, and results.
+
+Initial Goal
+------------
+- Improve math free-response (FRQ) accuracy for the CSE 151B competition.
+- Keep MCQ behavior unchanged because baseline MCQ was already strong.
+- Use RunPod A40 with vLLM and Qwen/Qwen3-4B-Thinking-2507.
+- Explore LoRA/SFT but only accept it if it beats the baseline on answer accuracy.
+
+Dataset
+-------
+Public dataset:
+- Path: data/public.jsonl
+- Total: 1126 questions
+- FRQ: 751
+- MCQ: 375
+
+Private dataset:
+- Local path: /Users/keith/Downloads/private (1).jsonl
+- Uploaded to RunPod as: data/private.jsonl
+- Total: 943 questions
+- FRQ: 643
+- MCQ: 300
+- No answer field, so it is private/inference-only.
+
+RunPod / GPU Setup
+------------------
+- Used RunPod A40 x1.
+- vLLM version pinned around vllm==0.8.5.post1.
+- Transformers pinned to transformers>=4.51,<4.54 and tokenizers>=0.21,<0.22 to avoid tokenizer issues.
+- bitsandbytes quantization kept:
+  - quantization="bitsandbytes"
+  - load_format="bitsandbytes"
+
+Important: MCQ Must Stay Baseline
+---------------------------------
+The user clarified that the strong MCQ baseline was vLLM, not transformers.
+
+Original/baseline MCQ prompt:
+You are an expert mathematician. Read the problem and the answer choices below, then select the single best answer. Output ONLY the letter of your chosen option inside \boxed{}, e.g. \boxed{C}.
+
+Original/baseline MCQ parser:
+def extract_letter(text: str) -> str:
+    m = re.search(r"\\boxed\{([A-Za-z])\}", text)
+    if m:
+        return m.group(1).upper()
+    matches = re.findall(r"\b([A-Z])\b", text.upper())
+    return matches[-1] if matches else ""
+
+Decision:
+- Do not apply FRQ LoRA to MCQ.
+- Run MCQ separately using baseline vLLM settings.
+- Run FRQ separately using either baseline or FRQ-only LoRA if it actually improves.
+
+Baseline FRQ Evaluation
+-----------------------
+Full public FRQ baseline was run with max_tokens=4096.
+
+Result:
+- 427 / 751 = 56.86%
+
+After LaTeX-style postprocess rescore:
+- 430 / 751 = 57.26%
+
+Error breakdown after rescore:
+- correct: 425
+- correct_after_postprocess: 5
+- wrong_answer_count: 126
+- missing_boxed: 88
+- expression_format: 69
+- precision_rounding: 15
+- wrong_math: 23
+
+Takeaway:
+- Most errors were not pure math errors.
+- Biggest issues were wrong answer count, missing boxed output, and expression formatting.
+- True wrong_math was much smaller.
+- More max tokens might help some missing_boxed cases, but it is slow and does not fix expression/format issues.
+
+Postprocess Work
+----------------
+Added FRQ postprocess helpers in frq_tools.py:
+- Extract last \boxed{...}
+- Extract markers like FINAL:, Answer:, answer is, ####
+- Strip units unless explicitly required
+- Remove thousands commas
+- Convert separators like |||, newlines, semicolons into comma-separated lists
+- Preserve $/% only when the problem asks
+- Normalize LaTeX-ish math:
+  - \dfrac / \frac -> plain fraction
+  - \pi -> pi
+  - \infty -> infinity
+  - \sin, \cos, \tan, \ln, \log -> plain function names
+  - e^{16x} -> e^(16*x)
+
+Postprocess only gave a small gain: +3 on the full FRQ run.
+
+Notebook Work
+-------------
+The notebook starter_code_cse151b_comp.ipynb was updated to:
+- Include optional LoRA/SFT prep and training cells.
+- Add LoRA inference via vLLM with USE_LORA=True.
+- Inline FRQ postprocess/scoring helpers so the notebook is self-contained.
+- Restore MCQ extractor to original/simple baseline behavior.
+- Support private test mode with no answer field.
+- Auto-detect HAS_GOLD.
+- SAVE_EVAL=None means:
+  - public data with answers -> evaluation output
+  - private data without answers -> submission/private-style output
+
+Key notebook private config:
+DATA_PATH = "data/private.jsonl"
+OUTPUT_PATH = "results/private_predictions.jsonl"
+ERROR_REPORT_PATH = "results/private_errors.jsonl"
+EVAL_FRQ_ONLY = False
+SAVE_EVAL = None
+USE_LORA = False
+
+Commits Made
+------------
+Recent commits included:
+- 3984bee Normalize LaTeX-style FRQ answers
+- f5ac8ba Add notebook LoRA workflow
+- 20898d0 Support private notebook inference
+- 2cfefc9 Support private split inference
+
+LoRA Attempt 1: Public FRQ Final-Only
+-------------------------------------
+Prepared SFT data from public FRQ:
+python scripts/prepare_sft_data.py \
+  --input data/public.jsonl \
+  --output data/public_frq_sft.jsonl
+
+This wrote 751 SFT records.
+
+Training command:
+nohup python -u scripts/train_lora.py \
+  --train-file data/public_frq_sft.jsonl \
+  --output-dir outputs/qwen-frq-lora-public \
+  --epochs 1 \
+  --max-length 4096 \
+  --learning-rate 2e-4 \
+  --batch-size 1 \
+  --grad-accum 16 \
+  > results/train_lora_public.log 2>&1 &
+
+Training finished successfully:
+- Saved adapter to outputs/qwen-frq-lora-public
+
+LoRA config:
+- base_model_name_or_path: Qwen/Qwen3-4B-Thinking-2507
+- peft_type: LORA
+- r: 16
+- lora_alpha: 32
+- lora_dropout: 0.05
+- target modules: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+
+Eval on same 200 public FRQ seed=151:
+- Baseline same 200: 109 / 200 = 54.5%
+- Public-final-answer LoRA: 59 / 200 = 29.5%
+
+Takeaway:
+- Bad.
+- It learned to answer very quickly in boxed format, but destroyed reasoning.
+- Do not use outputs/qwen-frq-lora-public for private.
+
+LoRA Attempt 2: OpenR1 Solution Data
+------------------------------------
+Prepared external data:
+python scripts/prepare_external_math_sft.py \
+  --preset openr1 \
+  --sample-size 3000 \
+  --assistant-mode solution \
+  --output data/openr1_solution_sft.jsonl
+
+This wrote 3000 records from open-r1/OpenR1-Math-220k.
+
+Training command:
+nohup python -u scripts/train_lora.py \
+  --train-file data/openr1_solution_sft.jsonl \
+  --output-dir outputs/qwen-frq-lora-openr1-solution \
+  --epochs 1 \
+  --max-length 4096 \
+  --learning-rate 5e-5 \
+  --batch-size 1 \
+  --grad-accum 16 \
+  > results/train_lora_openr1_solution.log 2>&1 &
+
+Eval on same 200 public FRQ seed=151:
+- Baseline same 200: 109 / 200 = 54.5%
+- Public-final-answer LoRA: 59 / 200 = 29.5%
+- OpenR1-solution LoRA: 69 / 200 = 34.5%
+
+Takeaway:
+- Also bad.
+- Better than public-final LoRA, but still far below baseline.
+- It learned external math style and often failed the local grader format/domain.
+- Do not use outputs/qwen-frq-lora-openr1-solution for private.
+
+External Datasets Discussed
+---------------------------
+Checked external datasets:
+- open-r1/OpenR1-Math-220k
+  Link: https://huggingface.co/datasets/open-r1/OpenR1-Math-220k
+  Use: broad math reasoning data with solutions/answers.
+
+- AI-MO/NuminaMath-CoT
+  Link: https://huggingface.co/datasets/AI-MO/NuminaMath-CoT
+  Use: large competition/math CoT data.
+
+- hendrycks/competition_math
+  Link: https://huggingface.co/datasets/hendrycks/competition_math
+  Note: conceptually closest, but Hugging Face page had a DMCA/access warning, so not reliable for overnight jobs.
+
+Decision After LoRA Experiments
+-------------------------------
+Do not use LoRA for private tonight.
+
+Reason:
+- Both LoRA adapters failed the acceptance criterion.
+- Acceptance criterion was to beat baseline on the same 200 public FRQ sample.
+- Neither adapter came close.
+
+Best current private strategy:
+- MCQ: baseline vLLM, original prompt/parser/settings.
+- FRQ: baseline vLLM 4096 with postprocess.
+- Merge MCQ + FRQ outputs.
+
+Private Inference Commands
+--------------------------
+MCQ baseline:
+nohup python -u scripts/eval_mcq_vllm.py \
+  --data data/private.jsonl \
+  --output results/private_mcq_baseline.jsonl \
+  --errors results/private_mcq_baseline_errors.jsonl \
+  > results/private_mcq_baseline.log 2>&1 &
+
+FRQ baseline:
+nohup python -u scripts/eval_frq_vllm.py \
+  --data data/private.jsonl \
+  --max-tokens 4096 \
+  --output results/private_frq_baseline.jsonl \
+  --errors results/private_frq_baseline_errors.jsonl \
+  > results/private_frq_baseline.log 2>&1 &
+
+Merge:
+python scripts/merge_private_predictions.py \
+  --data data/private.jsonl \
+  --mcq results/private_mcq_baseline.jsonl \
+  --frq results/private_frq_baseline.jsonl \
+  --output results/private_predictions_merged.jsonl
+
+Monitoring Commands
+-------------------
+Watch a log:
+tail -f results/<log_name>.log
+
+Stop watching log without killing job:
+Ctrl+C
+
+Check GPU:
+nvidia-smi
+
+Check process:
+ps aux | grep eval
+
+Useful Notes
+------------
+- RunPod SSH password login failed because the pod expects an SSH key.
+- Easiest upload path was dragging private.jsonl into JupyterLab data/ folder.
+- Do not commit data/private.jsonl.
+- Added data/private.jsonl to .gitignore.
+
+Current Recommendation
+----------------------
+Submit/score a baseline private run first.
+Do not use either LoRA adapter for private.
+Further improvement should focus on:
+1. Better prompt/postprocess, especially embedded choice FRQ and multi-blank exact formatting.
+2. Fine-tuning with data closer to this exact dataset format, ideally with reasoning plus final answers, not final-only labels.
+3. Possibly train on local-style generated rationales, but validate against a held-out public split before private.
+
