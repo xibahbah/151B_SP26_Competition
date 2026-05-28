@@ -240,12 +240,14 @@ def score_frq_item(judger: Any, item: dict[str, Any], response: str) -> dict[str
     gold_items = _gold_list(gold)
     raw_correct = _safe_judge(judger, response, gold_items)
     postprocessed = postprocess_response(response, item["question"], len(gold_items))
-    final_correct = _safe_judge(judger, postprocessed["response"], gold_items)
+    postprocess_correct = _safe_judge(judger, postprocessed["response"], gold_items)
+    final_correct = raw_correct or postprocess_correct
     return {
         "postprocessed_response": postprocessed["response"],
         "postprocessed_answer": postprocessed["answer_text"],
         "postprocess_notes": postprocessed["notes"],
         "raw_correct": raw_correct,
+        "postprocess_correct": postprocess_correct,
         "correct": final_correct,
         "error_type": classify_error(judger, response, postprocessed, gold_items, raw_correct, final_correct),
     }
