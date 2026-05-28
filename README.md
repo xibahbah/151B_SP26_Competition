@@ -48,6 +48,25 @@ python scripts/rescore_frq_results.py \
   --errors results/frq_baseline_errors.jsonl
 ```
 
+Analyze the remaining FRQ failures:
+
+```bash
+python scripts/analyze_frq_errors.py \
+  --results results/frq_baseline_full_rescored.jsonl \
+  --examples results/frq_error_examples.jsonl \
+  --limit 3
+```
+
+Run the offline repair pass on saved FRQ outputs:
+
+```bash
+python scripts/repair_frq_outputs.py \
+  --input results/frq_baseline_full.jsonl \
+  --output results/frq_baseline_full_repaired.jsonl \
+  --errors results/frq_baseline_full_repaired_errors.jsonl \
+  --oracle-errors results/frq_baseline_full_oracle_errors.jsonl
+```
+
 Prepare local training data for SFT/LoRA:
 
 ```bash
