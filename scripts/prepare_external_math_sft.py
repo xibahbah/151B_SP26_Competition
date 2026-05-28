@@ -64,6 +64,14 @@ PRESETS = {
         "solution_field": "solution",
         "answer_field": "answer",
     },
+    "numina": {
+        "dataset": "AI-MO/NuminaMath-CoT",
+        "config": None,
+        "split": "train",
+        "problem_field": "problem",
+        "solution_field": "solution",
+        "answer_field": None,
+    },
 }
 
 
