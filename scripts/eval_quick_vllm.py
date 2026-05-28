@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import time
 from pathlib import Path
 import sys
 
@@ -46,8 +47,7 @@ Final response must end with exactly one line and no trailing explanation:
 SYSTEM_PROMPT_MCQ = (
     "You are an expert mathematician. "
     "Read the problem and the answer choices below, then select the single best answer. "
-    "Do not show your reasoning. Output ONLY the letter of your chosen option inside "
-    "\\boxed{}, e.g. \\boxed{C}."
+    "Output ONLY the letter of your chosen option inside \\boxed{}, e.g. \\boxed{C}."
 )
 
 
@@ -116,7 +116,7 @@ def main() -> None:
     parser.add_argument("--model-id", default="Qwen/Qwen3-4B-Thinking-2507")
     parser.add_argument("--mcq-sample-size", type=int, default=100)
     parser.add_argument("--frq-sample-size", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=151)
+    parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--frq-max-tokens", type=int, default=4096)
     parser.add_argument("--mcq-max-tokens", type=int, default=768)
@@ -129,11 +129,13 @@ def main() -> None:
     os.environ.setdefault("VLLM_USE_V1", "0")
 
     rows = read_jsonl(Path(args.data))
-    rng = random.Random(args.seed)
+    sample_seed = int(time.time_ns() % (2**32)) if args.seed < 0 else args.seed
+    rng = random.Random(sample_seed)
     mcq_rows = sample_rows([row for row in rows if row.get("options")], args.mcq_sample_size, rng)
     frq_rows = sample_rows([row for row in rows if not row.get("options")], args.frq_sample_size, rng)
     data = mcq_rows + frq_rows
 
+    print(f"Sample seed: {sample_seed}")
     print(f"Evaluation set: {len(mcq_rows)} MCQ, {len(frq_rows)} FRQ")
 
     llm = LLM(
@@ -228,6 +230,7 @@ def main() -> None:
                 "is_mcq": is_mcq,
                 "gold": item["answer"],
                 "response": response,
+                "sample_seed": sample_seed,
                 **score_info,
             }
         )

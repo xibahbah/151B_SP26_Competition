@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import time
 from pathlib import Path
 
 from tqdm import tqdm
@@ -77,7 +78,7 @@ def main() -> None:
     parser.add_argument("--errors", default="results/mcq_baseline_errors.jsonl")
     parser.add_argument("--model-id", default="Qwen/Qwen3-4B-Thinking-2507")
     parser.add_argument("--sample-size", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=151)
+    parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--max-tokens", type=int, default=768)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -89,9 +90,11 @@ def main() -> None:
     os.environ.setdefault("VLLM_USE_V1", "0")
 
     data = [row for row in read_jsonl(Path(args.data)) if row.get("options")]
+    sample_seed = int(time.time_ns() % (2**32)) if args.seed < 0 else args.seed
     if args.sample_size is not None:
-        rng = random.Random(args.seed)
+        rng = random.Random(sample_seed)
         data = rng.sample(data, min(args.sample_size, len(data)))
+    print(f"Sample seed: {sample_seed}")
 
     llm = LLM(
         model=args.model_id,
@@ -146,6 +149,7 @@ def main() -> None:
                 "predicted_letter": pred,
                 "correct": correct,
                 "error_type": "correct" if correct else "wrong_letter",
+                "sample_seed": sample_seed,
             }
         )
 
