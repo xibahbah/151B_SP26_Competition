@@ -43,6 +43,35 @@ Final response must end with exactly one line and no trailing explanation:
 \\boxed{...}"""
 
 
+def build_user_content(question: str) -> str:
+    """Append a structural, gold-free directive to the question.
+
+    The hint is derived only from the question text (the number of [ANS]
+    blanks), so it behaves identically on public and private data and does not
+    overfit to gold answers. It targets the two biggest error buckets:
+    wrong_answer_count and precision_rounding.
+    """
+    n_blanks = question.count("[ANS]")
+    lines = [question.strip(), ""]
+    if n_blanks >= 1:
+        plural = "s" if n_blanks != 1 else ""
+        lines.append(
+            f"This problem has exactly {n_blanks} [ANS] blank{plural}. "
+            f"Output exactly {n_blanks} value{plural} inside a single "
+            f"\\boxed{{...}}, comma-separated, in the same order as the blanks."
+        )
+    else:
+        lines.append(
+            "Output the single requested final answer inside one \\boxed{...}."
+        )
+    lines.append(
+        "Carry full precision through every step and do not round intermediate "
+        "results. Unless the problem explicitly states how to round, give at "
+        "least 10 significant digits for any decimal answer."
+    )
+    return "\n".join(lines)
+
+
 def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.open() if line.strip()]
 
@@ -120,7 +149,7 @@ def main() -> None:
         prompt = tokenizer.apply_chat_template(
             [
                 {"role": "system", "content": SYSTEM_PROMPT_MATH},
-                {"role": "user", "content": item["question"]},
+                {"role": "user", "content": build_user_content(item["question"])},
             ],
             tokenize=False,
             add_generation_prompt=True,
