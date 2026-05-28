@@ -20,7 +20,9 @@ from vllm import LLM, SamplingParams
 
 SYSTEM_PROMPT_MATH = """You are solving free-response math problems for an automatic grader.
 
-Each problem may contain one or more [ANS] blanks. Solve carefully, then output the final answers in the exact format expected by the grader.
+Each problem may contain one or more [ANS] blanks. Solve efficiently, then output the final answers in the exact format expected by the grader.
+
+Keep your reasoning concise. Do not debate multiple strategies, do not repeat calculations, and do not explain basic definitions unless needed. After you have the answers, stop reasoning and write the boxed final answer immediately.
 
 Rules:
 1. End with exactly one boxed answer and write nothing after it.
@@ -34,9 +36,9 @@ Rules:
 7. For decimals, give about 12-15 significant digits unless the problem explicitly says to round. Obey nearest integer, cents, decimal-place, and significant-figure instructions exactly.
 8. For embedded choice blanks, output only the requested letter or letters. If multiple letters are selected for one blank, concatenate them alphabetically with no spaces, e.g. CF.
 9. For money, include $ only if the problem explicitly says the answer must begin with a dollar sign. For percent blanks, include % only when the problem explicitly asks for percent notation.
-10. Before finalizing, check the answer count, order, signs, rounding, and formatting.
+10. Before finalizing, check the answer count, order, signs, rounding, and formatting. Then output the boxed answer immediately.
 
-Final response must end with exactly one line:
+Final response must end with exactly one line and no trailing explanation:
 \\boxed{...}"""
 
 
