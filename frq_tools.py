@@ -174,6 +174,7 @@ def _normalize_latex_math(text: str) -> str:
     text = text.replace("\\tan", "tan")
     text = text.replace("\\sqrt", "sqrt")
     text = _latex_frac_to_plain(text)
+    text = re.sub(r"sqrt\{([^{}]+)\}", r"sqrt(\1)", text)
     text = re.sub(r"([A-Za-z0-9_)])\^\{([^{}]+)\}", r"\1^(\2)", text)
     text = re.sub(r"\be\^\(?([^),\s]+)\)?", r"e^(\1)", text)
     text = re.sub(r"(?<=\))(?=\()", "*", text)

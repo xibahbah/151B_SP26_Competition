@@ -175,7 +175,7 @@ def strip_think(text: str) -> str:
 
 def trim_explanation(text: str) -> str:
     text = text.strip()
-    text = re.sub(r"^(?:is|are|=|:|-)\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^(?:is|are|=|:|-\s+)\s*", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"^(?:about|approximately|approx\.?|around|roughly)\s+", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*\([^)]*(?:sig figs?|significant|rounded|approx|since)[^)]*\)", "", text, flags=re.IGNORECASE)
 
@@ -422,6 +422,8 @@ def variant_base_quality(source: str, answer_text: str, kind: str, question: str
             return 94
     if source.startswith("numeric_tokens"):
         return 42
+    if "inline_labelled" in source:
+        return 78
     if "labelled" in source:
         return 84
     if source.startswith("existing_postprocess") or source.startswith("boxed"):
@@ -433,7 +435,31 @@ def variant_base_quality(source: str, answer_text: str, kind: str, question: str
     return 68
 
 
-def sympy_eval_part(part: str) -> str | None:
+def prefer_sig6_tuple(question: str) -> bool:
+    q = question.lower()
+    trig_solution = (
+        ("all solutions" in q or "interval" in q or "0 \\leq" in q or "0 <= " in q)
+        and any(token in q for token in ("sin", "cos", "tan", "\\sin", "\\cos", "\\tan"))
+    )
+    quadratic_decimal = "completing the square" in q
+    return trig_solution or quadratic_decimal
+
+
+def prefer_sig6_scalar(question: str) -> bool:
+    q = question.lower()
+    exact_radical = "exact form" in q or "cannot contain decimals" in q or "sqrt" in q
+    if exact_radical:
+        return False
+    if "round" in q or "nearest" in q:
+        return True
+    if "tan^{-1}" in q or "\\tan^{-1}" in q or "arctan" in q:
+        return True
+    if "hours" in q and ("how long" in q or "work together" in q or "together" in q):
+        return True
+    return False
+
+
+def sympy_eval_part(part: str, sigfigs: int = 15) -> str | None:
     cleaned = part.strip()
     if len(cleaned) > 180:
         return None
@@ -446,6 +472,7 @@ def sympy_eval_part(part: str) -> str | None:
 
         expr = cleaned.replace("^", "**")
         expr = re.sub(r"\\d?frac\{([^{}]+)\}\{([^{}]+)\}", r"(\1)/(\2)", expr)
+        expr = re.sub(r"sqrt\{([^{}]+)\}", r"sqrt(\1)", expr)
         parsed = sp.sympify(
             expr,
             locals={
@@ -462,7 +489,32 @@ def sympy_eval_part(part: str) -> str | None:
         value = float(parsed.evalf(16))
     except Exception:
         return None
-    return f"{value:.15g}"
+    return f"{value:.{sigfigs}g}"
+
+
+def add_tuple_variant(
+    candidates: list[Candidate],
+    seen: set[str],
+    parts: list[str],
+    source: str,
+    question: str,
+    expected_count: int,
+    base_quality: float,
+) -> None:
+    if expected_count != 1 or len(parts) <= 1 or len(parts) > 8:
+        return
+    tuple_text = f"({', '.join(parts)})"
+    if not is_tuple_like_answer(tuple_text):
+        return
+    add_candidate(
+        candidates,
+        seen,
+        tuple_text,
+        source,
+        question,
+        expected_count,
+        base_quality,
+    )
 
 
 def add_variants(candidates: list[Candidate], seen: set[str], question: str, expected_count: int) -> None:
@@ -473,16 +525,20 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
             continue
 
         eval_parts = []
+        sig6_parts = []
         changed = False
         for part in parts:
             evaluated = sympy_eval_part(part)
             if evaluated is None:
                 eval_parts.append(part)
+                sig6_parts.append(part)
             else:
                 eval_parts.append(evaluated)
+                sig6_parts.append(sympy_eval_part(part, sigfigs=6) or evaluated)
                 changed = True
         if changed:
             answer_text = ", ".join(eval_parts)
+            base_quality = variant_base_quality(candidate.source, answer_text, "sympy", question, expected_count) + 4
             add_candidate(
                 candidates,
                 seen,
@@ -490,8 +546,44 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
                 f"sympy_eval:{candidate.source}",
                 question,
                 expected_count,
-                variant_base_quality(candidate.source, answer_text, "sympy", question, expected_count) + 4,
+                base_quality,
             )
+            add_tuple_variant(
+                candidates,
+                seen,
+                eval_parts,
+                f"tuple_wrap:sympy_eval:{candidate.source}",
+                question,
+                expected_count,
+                base_quality + 16,
+            )
+            if expected_count == 1 and sig6_parts != eval_parts:
+                answer_text = ", ".join(sig6_parts)
+                short_quality = variant_base_quality(candidate.source, answer_text, "sympy_sig6", question, expected_count)
+                if len(sig6_parts) > 1:
+                    short_quality += 8 if prefer_sig6_tuple(question) else -8
+                    tuple_bonus = 24 if prefer_sig6_tuple(question) else 4
+                else:
+                    short_quality += 8 if prefer_sig6_scalar(question) else -8
+                    tuple_bonus = 4
+                add_candidate(
+                    candidates,
+                    seen,
+                    answer_text,
+                    f"sympy_eval_sig6:{candidate.source}",
+                    question,
+                    expected_count,
+                    short_quality,
+                )
+                add_tuple_variant(
+                    candidates,
+                    seen,
+                    sig6_parts,
+                    f"tuple_wrap:sympy_eval_sig6:{candidate.source}",
+                    question,
+                    expected_count,
+                    short_quality + tuple_bonus,
+                )
 
         stripped = []
         changed = False
@@ -502,6 +594,7 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
             stripped.append(new)
         if changed:
             answer_text = ", ".join(stripped)
+            base_quality = variant_base_quality(candidate.source, answer_text, "strip_labels", question, expected_count) + 2
             add_candidate(
                 candidates,
                 seen,
@@ -509,7 +602,16 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
                 f"strip_labels:{candidate.source}",
                 question,
                 expected_count,
-                variant_base_quality(candidate.source, answer_text, "strip_labels", question, expected_count) + 2,
+                base_quality,
+            )
+            add_tuple_variant(
+                candidates,
+                seen,
+                stripped,
+                f"tuple_wrap:strip_labels:{candidate.source}",
+                question,
+                expected_count,
+                base_quality + 12,
             )
 
         approx_parts = []
@@ -526,6 +628,7 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
             approx_parts.append(new)
         if changed:
             answer_text = ", ".join(approx_parts)
+            base_quality = variant_base_quality(candidate.source, answer_text, "approx_rhs", question, expected_count) + 5
             add_candidate(
                 candidates,
                 seen,
@@ -533,7 +636,16 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
                 f"approx_rhs:{candidate.source}",
                 question,
                 expected_count,
-                variant_base_quality(candidate.source, answer_text, "approx_rhs", question, expected_count) + 5,
+                base_quality,
+            )
+            add_tuple_variant(
+                candidates,
+                seen,
+                approx_parts,
+                f"tuple_wrap:approx_rhs:{candidate.source}",
+                question,
+                expected_count,
+                base_quality + 12,
             )
 
         rhs_parts = []
@@ -547,6 +659,7 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
             rhs_parts.append(new)
         if changed:
             answer_text = ", ".join(rhs_parts)
+            base_quality = variant_base_quality(candidate.source, answer_text, "equals_rhs", question, expected_count) + 3
             add_candidate(
                 candidates,
                 seen,
@@ -554,8 +667,46 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
                 f"equals_rhs:{candidate.source}",
                 question,
                 expected_count,
-                variant_base_quality(candidate.source, answer_text, "equals_rhs", question, expected_count) + 3,
+                base_quality,
             )
+            add_tuple_variant(
+                candidates,
+                seen,
+                rhs_parts,
+                f"tuple_wrap:equals_rhs:{candidate.source}",
+                question,
+                expected_count,
+                base_quality + 12,
+            )
+
+        add_tuple_variant(
+            candidates,
+            seen,
+            parts,
+            f"tuple_wrap:{candidate.source}",
+            question,
+            expected_count,
+            variant_base_quality(candidate.source, candidate.answer_text, "tuple_wrap", question, expected_count) + 12,
+        )
+
+
+def is_tuple_like_answer(answer_text: str) -> bool:
+    if not (answer_text.startswith("(") and answer_text.endswith(")")):
+        return False
+    inner = answer_text[1:-1].strip()
+    if not inner or "," not in inner:
+        return False
+    parts = [part.strip() for part in _split_top_level_commas(inner) if part.strip()]
+    if len(parts) < 2:
+        return False
+    allowed_word_pattern = re.compile(r"^(?:sqrt|sin|cos|tan|atan|ln|log|pi|e|infinity|x|y|t|n|i|INF)$", re.IGNORECASE)
+    for part in parts:
+        words = re.findall(r"[A-Za-z]+", part)
+        if any(not allowed_word_pattern.fullmatch(word) for word in words):
+            return False
+        if len(part) > 120:
+            return False
+    return True
 
 
 def generate_candidates(item: dict[str, Any], response: str) -> list[Candidate]:
