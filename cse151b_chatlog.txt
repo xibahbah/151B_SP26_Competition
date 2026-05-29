@@ -207,6 +207,25 @@ bash scripts/run_controlled_lora_ab.sh train-b
 bash scripts/run_controlled_lora_ab.sh eval-b
 bash scripts/run_controlled_lora_ab.sh repair-b
 
+Latest 6144 Run Result
+----------------------
+Full FRQ max_tokens=6144 repaired result:
+- 458 / 751 = 60.99%
+- Worse than best 4096 repaired result: 463 / 751 = 61.65%
+- 6144 fixes 23 examples that 4096 misses, but breaks 28 examples that 4096 got right.
+- Conclusion: do not switch to 6144 as the main setting. It is slower and slightly worse.
+
+Small Repair Ranking Tweak
+--------------------------
+Adjusted repair ranking to prefer line-labelled values over inline-labelled values,
+penalize approximate/explanatory answers, and prefer decimal answer-marker values
+when the prompt says the answer cannot be algebraic.
+
+Local check on frq_full_4096_v2_repaired_latest.jsonl:
+- Before: 463 / 751 = 61.65%
+- After: 466 / 751 = 62.05%
+- This is safe but small; extraction alone is still capped around 472 / 751.
+
 New Holdout Workflow
 --------------------
 Added:

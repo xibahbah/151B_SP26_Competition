@@ -252,10 +252,23 @@ def quality_score(answer_text: str, source: str, question: str, expected_count: 
         score -= 8
     if not is_usable_answer(answer_text, question, expected_count):
         score -= 90
+    if source.startswith("labelled_values"):
+        score += 3
+    if source.startswith("inline_labelled_values"):
+        score -= 4
     if source.startswith("numeric_tokens"):
         score -= 20
     if source.startswith("sympy"):
         score += 8
+    if "≈" in answer_text or "\\approx" in answer_text or "approximately" in lower:
+        score -= 10
+    if (
+        expected_count == 1
+        and source.startswith("answer_marker")
+        and re.search(r"cannot be an algebraic expression|decimal", question, flags=re.IGNORECASE)
+        and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", answer_text.strip())
+    ):
+        score += 10
     score -= min(5.0, len(answer_text) / 120.0)
     return score
 
