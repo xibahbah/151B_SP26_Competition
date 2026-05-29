@@ -126,3 +126,44 @@ python scripts/eval_frq_vllm.py \
   --output results/frq_lora_holdout.jsonl \
   --errors results/frq_lora_holdout_errors.jsonl
 ```
+
+## Controlled LoRA A/B
+
+Use this only for FRQ. MCQ should stay on the baseline vLLM path.
+
+The current public-FRQ baseline to beat is the repaired 4096-token run:
+
+```text
+results/frq_full_4096_v2_repaired_latest.jsonl
+```
+
+Run Adapter A, the safer self-distill format LoRA:
+
+```bash
+bash scripts/run_controlled_lora_ab.sh prepare
+bash scripts/run_controlled_lora_ab.sh train-a
+tail -f results/train_lora_selfdistill_safe.log
+bash scripts/run_controlled_lora_ab.sh eval-a
+tail -f results/frq_lora_selfdistill_holdout.log
+bash scripts/run_controlled_lora_ab.sh repair-a
+```
+
+Only if Adapter A beats the baseline holdout, run Adapter B:
+
+```bash
+bash scripts/run_controlled_lora_ab.sh prepare-mixed
+bash scripts/run_controlled_lora_ab.sh train-b
+tail -f results/train_lora_mixed_safe.log
+bash scripts/run_controlled_lora_ab.sh eval-b
+tail -f results/frq_lora_mixed_holdout.log
+bash scripts/run_controlled_lora_ab.sh repair-b
+```
+
+Check active jobs:
+
+```bash
+bash scripts/run_controlled_lora_ab.sh status
+```
+
+Reject an adapter if the repaired holdout is below the baseline holdout. If it
+passes holdout, run full FRQ before trusting it.

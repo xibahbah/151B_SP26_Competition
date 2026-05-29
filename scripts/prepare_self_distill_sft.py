@@ -4,10 +4,11 @@
 This is meant for cautious LoRA experiments:
 - hold out a fixed public FRQ sample for validation
 - train on non-holdout examples where the baseline was already correct
-- use the baseline's own correct response as the assistant target
+- use the baseline's own correct final boxed answer as the assistant target
 
 The goal is to preserve the base model's math behavior while nudging it toward
-the local dataset/prompt format, instead of teaching final-answer guessing.
+the local dataset/prompt format, instead of teaching final-answer guessing or
+long chain-of-thought style outputs.
 """
 
 from __future__ import annotations
@@ -67,8 +68,8 @@ def answer_text(answer: Any) -> str:
     return str(answer).strip()
 
 
-def strip_after_last_boxed(response: str) -> str:
-    """Keep response through the last complete boxed answer, if present."""
+def last_boxed_response(response: str) -> str:
+    """Return only the last complete boxed answer, if present."""
     last = response.rfind("\\boxed{")
     if last < 0:
         return response.strip()
@@ -80,26 +81,41 @@ def strip_after_last_boxed(response: str) -> str:
         elif response[i] == "}":
             depth -= 1
             if depth == 0:
-                return response[: i + 1].strip()
+                return response[last : i + 1].strip()
         i += 1
     return response.strip()
 
 
 def normalize_teacher_response(row: dict[str, Any], fallback_answer: Any, max_chars: int) -> str:
-    response = str(row.get("response") or "").strip()
-    if not response or not row.get("raw_correct", False):
+    if row.get("raw_correct", False):
+        response = str(row.get("response") or "").strip()
+    elif row.get("postprocess_correct", False):
         response = str(row.get("postprocessed_response") or "").strip()
+    elif row.get("repair_correct", False):
+        response = str(row.get("repair_response") or "").strip()
+    else:
+        response = ""
+
     if not response:
         response = f"\\boxed{{{answer_text(fallback_answer)}}}"
 
-    response = strip_after_last_boxed(response)
+    response = last_boxed_response(response)
     response = re.sub(r"\n{3,}", "\n\n", response).strip()
     if len(response) > max_chars:
-        boxed = str(row.get("postprocessed_response") or f"\\boxed{{{answer_text(fallback_answer)}}}").strip()
-        response = boxed
+        response = f"\\boxed{{{answer_text(fallback_answer)}}}"
     if "\\boxed{" not in response:
-        response = f"{response}\n\n\\boxed{{{answer_text(fallback_answer)}}}"
+        response = f"\\boxed{{{response}}}"
     return response
+
+
+def is_trainable_correct(result: dict[str, Any], include_postprocess: bool, include_repair: bool) -> tuple[bool, str]:
+    if bool(result.get("raw_correct")):
+        return True, "raw_correct"
+    if include_postprocess and bool(result.get("postprocess_correct")):
+        return True, "postprocess_correct"
+    if include_repair and bool(result.get("repair_correct")):
+        return True, "repair_correct"
+    return False, "wrong"
 
 
 def main() -> None:
@@ -112,6 +128,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=151)
     parser.add_argument("--max-teacher-chars", type=int, default=6000)
     parser.add_argument("--include-postprocess-correct", action="store_true")
+    parser.add_argument(
+        "--include-repair-correct",
+        action="store_true",
+        help="Also train on non-holdout rows where the offline repair extracted a correct answer.",
+    )
     args = parser.parse_args()
 
     data = [row for row in read_jsonl(Path(args.data)) if not row.get("options")]
@@ -124,22 +145,22 @@ def main() -> None:
     train_ids = set(by_id) - holdout_ids
 
     records = []
-    skipped_holdout = 0
     skipped_wrong = 0
+    teacher_sources: dict[str, int] = {}
     for row_id in sorted(train_ids):
         item = by_id[row_id]
         result = baseline_rows.get(row_id)
         if result is None:
             continue
-        if row_id in holdout_ids:
-            skipped_holdout += 1
-            continue
-        correct = bool(result.get("raw_correct")) or (
-            args.include_postprocess_correct and bool(result.get("postprocess_correct"))
+        correct, source = is_trainable_correct(
+            result,
+            include_postprocess=args.include_postprocess_correct,
+            include_repair=args.include_repair_correct,
         )
         if not correct:
             skipped_wrong += 1
             continue
+        teacher_sources[source] = teacher_sources.get(source, 0) + 1
 
         records.append({
             "id": row_id,
@@ -161,6 +182,8 @@ def main() -> None:
     print(f"Public FRQ rows: {len(data)}")
     print(f"Holdout rows: {len(holdout_ids)} -> {args.holdout_output}")
     print(f"Trainable correct baseline rows: {len(records)} -> {args.output}")
+    for source, count in sorted(teacher_sources.items()):
+        print(f"  {source}: {count}")
     print(f"Skipped wrong/non-correct train rows: {skipped_wrong}")
 
 

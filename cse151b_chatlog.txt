@@ -186,6 +186,27 @@ Known local dirty files:
 - scripts/.DS_Store
 Ignore these.
 
+Controlled LoRA Plan Implemented
+--------------------------------
+Added a controlled A/B LoRA workflow for safer experiments:
+- scripts/prepare_self_distill_sft.py now trains self-distill targets as only the final \boxed{...} answer, not full reasoning.
+- It still excludes the fixed 200-FRQ holdout from training.
+- It supports raw-correct, postprocess-correct, and optional repair-correct teacher rows.
+- scripts/summarize_frq_results.py summarizes result JSONL files and optional holdout IDs.
+- scripts/run_controlled_lora_ab.sh runs the safe Adapter A / Adapter B workflow with nohup logs and PID files.
+
+Main commands:
+bash scripts/run_controlled_lora_ab.sh prepare
+bash scripts/run_controlled_lora_ab.sh train-a
+bash scripts/run_controlled_lora_ab.sh eval-a
+bash scripts/run_controlled_lora_ab.sh repair-a
+
+Only run Adapter B if Adapter A beats the baseline holdout:
+bash scripts/run_controlled_lora_ab.sh prepare-mixed
+bash scripts/run_controlled_lora_ab.sh train-b
+bash scripts/run_controlled_lora_ab.sh eval-b
+bash scripts/run_controlled_lora_ab.sh repair-b
+
 New Holdout Workflow
 --------------------
 Added:
