@@ -607,6 +607,15 @@ def rounded_numeric_variants(parts: list[str], question: str) -> list[list[str]]
     return variants
 
 
+def rounded_variant_precision(parts: list[str]) -> int:
+    places = 0
+    for part in parts:
+        match = re.fullmatch(r"[+-]?\d+\.(\d+)", part.strip())
+        if match:
+            places = max(places, len(match.group(1)))
+    return places
+
+
 def numeric_tokens(text: str) -> list[float]:
     return [
         float(match.replace(",", ""))
@@ -727,6 +736,11 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
         deg = degree_match.group(1)
         found.append(("template:exact_radians", f"{deg}*pi/180"))
 
+    radian_degree_match = re.search(r"degree measure.*?angle\s*\$?(\d+(?:\.\d+)?)\$?\s*radians", q, flags=re.IGNORECASE | re.S)
+    if radian_degree_match and expected_count == 1:
+        radians = radian_degree_match.group(1)
+        found.append(("template:radians_to_degrees", f"{radians}*180/pi"))
+
     # Arc length s = r theta.
     arc_match = re.search(
         r"arc of length\s+(\d+(?:\.\d+)?).*?angle of\s+(\d+(?:\.\d+)?)\s+degrees",
@@ -736,6 +750,18 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
     if arc_match and expected_count == 1:
         length, degrees = map(float, arc_match.groups())
         found.append(("template:arc_radius", fmt_number(length * 180 / (degrees * 3.1416))))
+
+    if (
+        "stop signs" in q_lower
+        and "regular octagons" in q_lower
+        and "length of each edge" in q_lower
+        and expected_count == 1
+    ):
+        side_match = re.search(r"length of each edge.*?is\s+(\d+(?:\.\d+)?)", q, flags=re.IGNORECASE | re.S)
+        if side_match:
+            side = float(side_match.group(1))
+            radius = side / math.sqrt(2 - 2 * math.cos(2 * math.pi / 8))
+            found.append(("template:regular_octagon_circumradius", fmt_number(radius)))
 
     # Direct trig evaluation in radians.
     trig_calls = re.findall(r"\\?(sin|cos|tan)\s*\(\s*([-+]?\d+(?:\.\d+)?)\s*\)", q, flags=re.IGNORECASE)
@@ -1865,7 +1891,11 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
 
         for variant_parts in expression_style_variants(parts):
             answer_text = ", ".join(variant_parts)
-            base_quality = variant_base_quality(candidate.source, answer_text, "expr_style", question, expected_count) + 14
+            # Keep algebraic cleanup below sympy-evaluated numeric candidates; otherwise
+            # compact exact forms can incorrectly beat the decimal form expected here.
+            base_quality = variant_base_quality(candidate.source, answer_text, "expr_style", question, expected_count) + 8
+            if "answer_marker" in candidate.source:
+                base_quality -= 10
             add_candidate(
                 candidates,
                 seen,
@@ -1882,7 +1912,7 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
                 f"tuple_wrap:expr_style:{candidate.source}",
                 question,
                 expected_count,
-                base_quality + 12,
+                base_quality + 6,
             )
 
         mixed_parts = []
@@ -1911,6 +1941,9 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
             answer_text = ", ".join(rounded_parts)
             base_quality = variant_base_quality(candidate.source, answer_text, "rounded_numeric", question, expected_count)
             base_quality += 18 if stats_rounding_preferred(question) else 2
+            base_quality += min(12, rounded_variant_precision(rounded_parts))
+            if "answer_marker" in candidate.source and not stats_rounding_preferred(question):
+                base_quality -= 10
             add_candidate(
                 candidates,
                 seen,
