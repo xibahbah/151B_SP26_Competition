@@ -95,6 +95,10 @@ def main() -> None:
     parser.add_argument("--ids-file", default=None, help="JSON file containing item IDs to evaluate.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--top-k", type=int, default=-1)
+    parser.add_argument("--num-generations", type=int, default=1)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.78)
     parser.add_argument("--max-model-len", type=int, default=8192)
     args = parser.parse_args()
@@ -130,12 +134,13 @@ def main() -> None:
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(
         max_tokens=args.max_tokens,
-        temperature=0.0,
-        top_p=1.0,
-        top_k=-1,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
         min_p=0.0,
         presence_penalty=0.0,
         repetition_penalty=1.0,
+        n=args.num_generations,
     )
 
     lora_request = None
@@ -156,16 +161,19 @@ def main() -> None:
         )
         prompts.append(prompt)
 
-    responses = []
+    generated = []
     for start in tqdm(range(0, len(prompts), args.batch_size), desc="Generating"):
         batch = prompts[start : start + args.batch_size]
+        batch_items = data[start : start + args.batch_size]
         outputs = llm.generate(batch, sampling_params=sampling_params, lora_request=lora_request)
-        responses.extend(output.outputs[0].text.strip() for output in outputs)
+        for item, output in zip(batch_items, outputs):
+            for candidate_idx, candidate in enumerate(output.outputs):
+                generated.append((item, candidate_idx, candidate.text.strip()))
 
     has_gold = all("answer" in item for item in data)
     judger = Judger(strict_extract=False) if has_gold else None
     results = []
-    for item, response in tqdm(zip(data, responses), total=len(data), desc="Scoring"):
+    for item, candidate_idx, response in tqdm(generated, total=len(generated), desc="Scoring"):
         if has_gold:
             score_info = score_frq_item(judger, item, response)
             gold_fields = {"gold": item["answer"]}
@@ -185,6 +193,7 @@ def main() -> None:
         results.append({
             "id": item["id"],
             "is_mcq": False,
+            "candidate_idx": candidate_idx,
             "response": response,
             "sample_seed": sample_seed,
             **gold_fields,
@@ -201,6 +210,12 @@ def main() -> None:
         final_correct = sum(row["correct"] for row in results)
         print(f"Raw FRQ accuracy: {raw_correct}/{total} ({raw_correct / total * 100:.2f}%)")
         print(f"Postprocessed FRQ accuracy: {final_correct}/{total} ({final_correct / total * 100:.2f}%)")
+        if args.num_generations > 1:
+            grouped: dict[Any, list[dict]] = {}
+            for row in results:
+                grouped.setdefault(row["id"], []).append(row)
+            oracle = sum(any(candidate["correct"] for candidate in rows) for rows in grouped.values())
+            print(f"Per-question oracle accuracy: {oracle}/{len(grouped)} ({oracle / len(grouped) * 100:.2f}%)")
     else:
         print(f"FRQ private inference complete: {total} predictions")
     print(f"Wrote {args.output}")
