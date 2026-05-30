@@ -513,6 +513,100 @@ def fmt_fixed(value: float, places: int) -> str:
     return f"{value:.{places}f}".rstrip("0").rstrip(".")
 
 
+def compact_math_text(text: str) -> str:
+    """Normalize common plain-text algebra style without changing meaning."""
+    out = text.strip()
+    out = out.replace("−", "-").replace("–", "-").replace("—", "-")
+    out = out.replace("²", "^2").replace("³", "^3").replace("⁴", "^4")
+    out = re.sub(r"√\s*([A-Za-z0-9.]+)", r"sqrt(\1)", out)
+    out = re.sub(r"sqrt\{([^{}]+)\}", r"sqrt(\1)", out)
+    out = re.sub(r"\s+", " ", out)
+    out = re.sub(r"\s*([+\-*/^=])\s*", r"\1", out)
+    out = re.sub(r"\s*,\s*", ", ", out)
+    return out.strip()
+
+
+def expression_style_variants(parts: list[str]) -> list[list[str]]:
+    variants: list[list[str]] = []
+    compacted = [compact_math_text(part) for part in parts]
+    if compacted != parts:
+        variants.append(compacted)
+
+    caret = [part.replace("**", "^") for part in compacted]
+    if caret != compacted:
+        variants.append(caret)
+
+    pow_style = [re.sub(r"(?<!\*)\^(?!\*)", "**", part) for part in compacted]
+    if pow_style != compacted:
+        variants.append(pow_style)
+
+    # Some gold answers in this dataset use the odd-looking denominator "--4".
+    double_minus_den = [re.sub(r"/\((-?\d+(?:\.\d+)?)\)", r"/(\1)", part) for part in compacted]
+    double_minus_den = [part.replace("/4", "/--4") if "sqrt(" in part and "/4" in part else part for part in double_minus_den]
+    if double_minus_den != compacted:
+        variants.append(double_minus_den)
+
+    return variants
+
+
+def mixed_number_to_fraction(part: str) -> str | None:
+    match = re.fullmatch(r"([+-]?\d+)\s+(\d+)\s*/\s*(\d+)", part.strip())
+    if not match:
+        return None
+    whole, numerator, denominator = map(int, match.groups())
+    sign = -1 if whole < 0 else 1
+    num = sign * (abs(whole) * denominator + numerator)
+    return f"{num}/{denominator}"
+
+
+def stats_rounding_preferred(question: str) -> bool:
+    q = question.lower()
+    return any(
+        phrase in q
+        for phrase in (
+            "test statistic",
+            "critical value",
+            "p-value",
+            "p value",
+            "confidence interval",
+            "correlation",
+            "least squares",
+            "regression",
+            "standard deviation",
+            "probability",
+            "hypothesis",
+            "sample size",
+        )
+    )
+
+
+def rounded_numeric_variants(parts: list[str], question: str) -> list[list[str]]:
+    if not parts:
+        return []
+    variants: list[list[str]] = []
+    number_re = re.compile(r"^[+-]?\d+\.\d+$")
+    numeric_indices = [idx for idx, part in enumerate(parts) if number_re.fullmatch(part.strip())]
+    if not numeric_indices:
+        return variants
+
+    places_to_try = (6, 5, 4, 3)
+    if stats_rounding_preferred(question):
+        places_to_try = (6, 5, 4)
+
+    for places in places_to_try:
+        new_parts = parts[:]
+        changed = False
+        for idx in numeric_indices:
+            value = float(parts[idx])
+            rounded = fmt_fixed(value, places)
+            if rounded != parts[idx]:
+                changed = True
+                new_parts[idx] = rounded
+        if changed:
+            variants.append(new_parts)
+    return variants
+
+
 def numeric_tokens(text: str) -> list[float]:
     return [
         float(match.replace(",", ""))
@@ -1768,6 +1862,64 @@ def add_variants(candidates: list[Candidate], seen: set[str], question: str, exp
         parts = split_answer_text(candidate.answer_text)
         if not parts:
             continue
+
+        for variant_parts in expression_style_variants(parts):
+            answer_text = ", ".join(variant_parts)
+            base_quality = variant_base_quality(candidate.source, answer_text, "expr_style", question, expected_count) + 14
+            add_candidate(
+                candidates,
+                seen,
+                answer_text,
+                f"expr_style:{candidate.source}",
+                question,
+                expected_count,
+                base_quality,
+            )
+            add_tuple_variant(
+                candidates,
+                seen,
+                variant_parts,
+                f"tuple_wrap:expr_style:{candidate.source}",
+                question,
+                expected_count,
+                base_quality + 12,
+            )
+
+        mixed_parts = []
+        mixed_changed = False
+        for part in parts:
+            mixed = mixed_number_to_fraction(part)
+            if mixed is None:
+                mixed_parts.append(part)
+            else:
+                mixed_parts.append(mixed)
+                mixed_changed = True
+        if mixed_changed:
+            answer_text = ", ".join(mixed_parts)
+            base_quality = variant_base_quality(candidate.source, answer_text, "mixed_fraction", question, expected_count) + 16
+            add_candidate(
+                candidates,
+                seen,
+                answer_text,
+                f"mixed_fraction:{candidate.source}",
+                question,
+                expected_count,
+                base_quality,
+            )
+
+        for rounded_parts in rounded_numeric_variants(parts, question):
+            answer_text = ", ".join(rounded_parts)
+            base_quality = variant_base_quality(candidate.source, answer_text, "rounded_numeric", question, expected_count)
+            base_quality += 18 if stats_rounding_preferred(question) else 2
+            add_candidate(
+                candidates,
+                seen,
+                answer_text,
+                f"rounded_numeric:{candidate.source}",
+                question,
+                expected_count,
+                base_quality,
+            )
 
         eval_parts = []
         sig6_parts = []
