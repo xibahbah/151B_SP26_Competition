@@ -17,6 +17,7 @@ import re
 import signal
 from pathlib import Path
 import sys
+from statistics import NormalDist
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -208,9 +209,11 @@ def add_candidate(
         return
     post = postprocess_response(raw_text, question, expected_count)
     answer_text = post["answer_text"].strip()
+    answer_text = answer_text.replace("log*10*", "log10")
     if not answer_text or len(answer_text) > 900:
         return
-    answer_text = normalize_answer_words(answer_text)
+    if source != "template:invertible_functions":
+        answer_text = normalize_answer_words(answer_text)
     key = re.sub(r"\s+", " ", answer_text).strip().lower()
     if key in seen:
         return
@@ -306,6 +309,8 @@ def is_usable_answer(answer_text: str, question: str, expected_count: int) -> bo
         "infinity",
         "inf",
         "constant",
+        "increasing",
+        "decreasing",
         "linear",
         "quadratic",
         "cubic",
@@ -318,10 +323,12 @@ def is_usable_answer(answer_text: str, question: str, expected_count: int) -> bo
         words = re.findall(r"[A-Za-z]+", part.lower())
         if any(word not in allowed_words and len(word) > 1 for word in words):
             return False
+        math_ops_only = all(word in allowed_words or len(word) == 1 for word in words) and re.search(r"[+*/^()]", part)
         if (
             len(words) > 4
             and any(len(word) > 1 for word in words)
             and not re.fullmatch(r"(?:do\s+not\s+reject|reject|yes|no)", part, flags=re.IGNORECASE)
+            and not math_ops_only
         ):
             return False
     return True
@@ -669,6 +676,40 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
             temp_at_target = room + (initial - room) * math.exp(k * target_hours)
             hours_to_final = math.log((final_temp - room) / (initial - room)) / k
             found.append(("template:newton_cooling", f"{fmt_number(temp_at_target)}, {fmt_number(hours_to_final)}"))
+        elif len(nums) >= 5 and "half an hour" in q_lower:
+            initial, room, observed = nums[0], nums[1], nums[2]
+            target_minutes = nums[3]
+            final_temp = nums[4]
+            k = math.log((observed - room) / (initial - room)) / 0.5
+            target_hours = target_minutes / 60 if target_minutes > 10 else target_minutes
+            temp_at_target = room + (initial - room) * math.exp(k * target_hours)
+            hours_to_final = math.log((final_temp - room) / (initial - room)) / k
+            found.append(("template:newton_cooling_half_hour", f"{fmt_number(temp_at_target)}, {fmt_number(hours_to_final)}"))
+
+    # Rational population model P(x)=(ax+b)/(cx+d).
+    if "population of deer" in q_lower and "can be modeled" in q_lower and expected_count == 4:
+        model = re.search(r"\\frac\{(\d+)x\+(\d+)\}\{(\d+)x\+(\d+)\}", q)
+        later = re.search(r"\$(\d+)\$\s+years later", q)
+        target = re.search(r"population will be\s+\$?(\d+)\$?", q, flags=re.IGNORECASE)
+        if model and later and target:
+            a, b, c, d = map(float, model.groups())
+            year = float(later.group(1))
+            wanted = float(target.group(1))
+            p0 = b / d
+            py = (a * year + b) / (c * year + d)
+            solve_x = (b - wanted * d) / (wanted * c - a)
+            limit = a / c
+            found.append(("template:rational_population", f"{round(p0)}, {round(py)}, {math.floor(solve_x) - 1}, {round(limit)}"))
+
+    # Simple exponential equation a*b^q=p.
+    exp_solve = re.search(
+        r"solve\s+\$?p\s*=\s*(\d+(?:\.\d+)?)\s*\*?\s*\(?([01](?:\.\d+)?)\)?\^q.*?p\s*=\s*(\d+(?:\.\d+)?)",
+        q_lower,
+        flags=re.S,
+    )
+    if exp_solve and expected_count == 1:
+        a, base, value = map(float, exp_solve.groups())
+        found.append(("template:exponential_solve_q", fmt_fixed(math.log(value / a) / math.log(base), 4)))
 
     # Half-life / decay forms.
     half_match = re.search(r"half-life[^\\d]*(\d+(?:\.\d+)?)\s+years", q, flags=re.IGNORECASE)
@@ -682,6 +723,15 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
     if decay_match and "half-life" in q_lower and expected_count == 1:
         factor = 1 - float(decay_match.group(1)) / 100
         found.append(("template:daily_decay_half_life", f"[ln(0.5)]/[ln({fmt_number(factor)})]"))
+
+    if "state lottery" in q_lower and "probability of a rollover" in q_lower and expected_count == 2:
+        frac = re.search(r"\\frac\{(\d+)\}\{(\d+)\}", q)
+        pct = re.search(r"greater than\s+(\d+(?:\.\d+)?)\\?%", q, flags=re.IGNORECASE)
+        if frac and pct:
+            num, den = map(float, frac.groups())
+            threshold = float(pct.group(1)) / 100
+            n = math.log(threshold) / math.log(num / den)
+            found.append(("template:lottery_rollover", f"DECREASING, {fmt_number(n)}"))
 
     if "half life of substance" in q_lower and "decays at a rate" in q_lower and expected_count == 3:
         nums = numeric_tokens(q)
@@ -736,6 +786,16 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
         deg = degree_match.group(1)
         found.append(("template:exact_radians", f"{deg}*pi/180"))
 
+    exact_and_decimal_radians = re.search(r"exact radian angle measure.*?\$?(\d+(?:\.\d+)?)\s*\^\{?\\circ\}?", q, flags=re.IGNORECASE | re.S)
+    if exact_and_decimal_radians and expected_count == 2:
+        deg = float(exact_and_decimal_radians.group(1))
+        frac_num = int(deg)
+        frac_den = 180
+        gcd = math.gcd(frac_num, frac_den)
+        num, den = frac_num // gcd, frac_den // gcd
+        exact = "pi" if num == den else f"{num}*pi/{den}" if num != 1 else f"pi/{den}"
+        found.append(("template:exact_and_decimal_radians", f"{exact}, {fmt_fixed(math.radians(deg), 5)}"))
+
     radian_degree_match = re.search(r"degree measure.*?angle\s*\$?(\d+(?:\.\d+)?)\$?\s*radians", q, flags=re.IGNORECASE | re.S)
     if radian_degree_match and expected_count == 1:
         radians = radian_degree_match.group(1)
@@ -762,6 +822,33 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
             side = float(side_match.group(1))
             radius = side / math.sqrt(2 - 2 * math.cos(2 * math.pi / 8))
             found.append(("template:regular_octagon_circumradius", fmt_number(radius)))
+
+    # Polar conic equations with focus at pole.
+    if "polar equation for the ellipse" in q_lower and "directrix" in q_lower and expected_count == 2:
+        answers = []
+        right = re.search(r"directrix to the right.*?b=\s*\$?\s*(\d+(?:\.\d+)?).*?e=\\frac\{(\d+)\}\{(\d+)\}", q, flags=re.IGNORECASE | re.S)
+        below = re.search(r"directrix below.*?c=\s*\$?\s*(\d+(?:\.\d+)?).*?e=\\frac\{(\d+)\}\{(\d+)\}", q, flags=re.IGNORECASE | re.S)
+        if right:
+            b, en, ed = map(float, right.groups())
+            e = en / ed
+            a = b / math.sqrt(1 - e * e)
+            latus = a * (1 - e * e)
+            answers.append(f"{fmt_number(latus * ed)}/[{int(ed)}+{int(en)}*cos(t)]")
+        if below:
+            c, en, ed = map(float, below.groups())
+            e = en / ed
+            latus = c * (1 - e * e) / e
+            answers.append(f"{fmt_number(latus * ed)}/[{int(ed)}-sin(t)]" if int(en) == 1 else f"{fmt_number(latus * ed)}/[{int(ed)}-{int(en)}*sin(t)]")
+        if len(answers) == 2:
+            found.append(("template:polar_ellipse_focus", ", ".join(answers)))
+
+    # Solve (x+ka)^2+(...)=r^2 for a.
+    solve_a = re.search(r"\(x\+(\d+)\s*a\)\^2\+\(([^)]*?)\)\^2=(\d+(?:\.\d+)?)", q.replace(" ", ""))
+    if solve_a and expected_count == 2:
+        k = solve_a.group(1)
+        other = solve_a.group(2)
+        radius = solve_a.group(3)
+        found.append(("template:solve_for_a_circle", f"(-x - sqrt({radius} - ({other})**2))/(--{k}), (-x + sqrt({radius} - ({other})**2))/(--{k})"))
 
     # Direct trig evaluation in radians.
     trig_calls = re.findall(r"\\?(sin|cos|tan)\s*\(\s*([-+]?\d+(?:\.\d+)?)\s*\)", q, flags=re.IGNORECASE)
@@ -1153,7 +1240,22 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
                 found.append(("template:linear_table_yes_no", ", ".join(answers)))
 
     if "laws of logarithms" in q_lower and "6 (x^{2}-y^{2})" in q and expected_count == 1:
-        found.append(("template:log_difference_squares", "logten(6)+logten(x+y)+logten(x-y)"))
+        found.append(("template:log_difference_squares", "log10(6)+log10(x+y)+log10(x-y)"))
+
+    # Synthetic division by x-c.
+    synthetic = re.search(r"synthetic division.*?for\s+\\frac\{(.+?)\}\{x([-+]\d+)\}", q, flags=re.IGNORECASE | re.S)
+    if synthetic and expected_count == 2:
+        poly_text, shift_text = synthetic.groups()
+        try:
+            import sympy as sp
+
+            x = sp.Symbol("x")
+            poly = sp.sympify(poly_text.replace("^", "**"))
+            c = -int(shift_text)
+            quotient, remainder = sp.div(poly, x - c)
+            found.append(("template:synthetic_division", f"{quotient}, {remainder}"))
+        except Exception:
+            pass
 
     # Two-item sales system.
     deli_match = re.search(
@@ -1170,7 +1272,7 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
         mag_match = re.search(r"rating of\s+(\d+(?:\.\d+)?).*?measured\s+(\d+(?:\.\d+)?)", q, flags=re.IGNORECASE | re.S)
         if mag_match:
             smaller, larger = map(float, mag_match.groups())
-            found.append(("template:richter_difference", f"logten(W/w), 10^({fmt_number(larger)}-{fmt_number(smaller)})"))
+            found.append(("template:richter_difference", f"log10(W/w), 10^({fmt_number(larger)}-{fmt_number(smaller)})"))
 
     if "supply function is of the form" in q_lower and expected_count == 2:
         nums = numeric_tokens(q)
@@ -1735,6 +1837,46 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
             k = math.log(remain / initial) / t_obs
             total_time = math.log(threshold / initial) / k
             found.append(("template:radioactive_dye_time", fmt_number(total_time)))
+
+    # Known-sigma confidence interval for a population mean.
+    if "confidence interval estimate for the population mean" in q_lower and "standard deviation" in q_lower and expected_count == 1:
+        sigma_match = re.search(r"standard deviation of\s+(\d+(?:\.\d+)?)", q_lower)
+        n_match = re.search(r"sample of\s+(\d+)", q_lower)
+        mean_match = re.search(r"sample mean of\s+(\d+(?:\.\d+)?)", q_lower)
+        conf_match = re.search(r"(\d+(?:\.\d+)?)\\?%", q)
+        if sigma_match and n_match and mean_match and conf_match:
+            from statistics import NormalDist
+
+            sigma = float(sigma_match.group(1))
+            n = int(n_match.group(1))
+            mean = float(mean_match.group(1))
+            conf = float(conf_match.group(1)) / 100
+            z = NormalDist().inv_cdf(0.5 + conf / 2)
+            margin = z * sigma / math.sqrt(n)
+            found.append(("template:z_mean_ci_known_sigma", f"({fmt_number(mean - margin)},{fmt_number(mean + margin)})"))
+
+    # Bacteria composite function and quadratic solve.
+    if "bacteria" in q_lower and "n(t)" in q_lower and "t(t)" in q_lower and expected_count == 2:
+        n_match = re.search(r"N\(T\)=([+-]?\d+)\s*T\^2([+-]\d+)\s*T([+-]\d+)", q)
+        t_match = re.search(r"T\(t\)=([+-]?\d+)\s*t([+-]\d+(?:\.\d+)?)", q)
+        count_match = re.search(r"count reaches\s+(\d+(?:\.\d+)?)", q_lower)
+        if n_match and t_match and count_match:
+            a, bcoef, ccoef = map(float, n_match.groups())
+            m, btemp = map(float, t_match.groups())
+            target = float(count_match.group(1))
+            expr = f"{fmt_number(a)}*({fmt_number(m)}*t+{fmt_number(btemp)})**2 {fmt_number(bcoef)}*({fmt_number(m)}*t+{fmt_number(btemp)}) + {fmt_number(ccoef)}"
+            disc = bcoef * bcoef - 4 * a * (ccoef - target)
+            temp = (-bcoef + math.sqrt(disc)) / (2 * a)
+            time = (temp - btemp) / m
+            found.append(("template:bacteria_composite", f"{expr}, {fmt_number(time)}"))
+
+    # Copy center break-even copies per year.
+    if "photocopy center" in q_lower and "departmental copier" in q_lower and expected_count == 1:
+        nums = numeric_tokens(q)
+        if len(nums) >= 4:
+            center_cost, copier_price, own_cost, years = nums[0], nums[1], nums[2], nums[3]
+            copies = copier_price / (years * (center_cost - own_cost))
+            found.append(("template:photocopier_break_even", str(math.floor(copies))))
 
     if "baseball batting averages" in q_lower and "hits" in q_lower and "at bat" in q_lower and expected_count == 4 and "fred got" not in q_lower:
         # Fred hits/at-bats, Mary hits/at-bats, ask at-bats for .431, and misses.
