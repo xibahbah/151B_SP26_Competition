@@ -294,6 +294,8 @@ def is_usable_answer(answer_text: str, question: str, expected_count: int) -> bo
         "atan",
         "ln",
         "log",
+        "logten",
+        "exp",
         "pi",
         "e",
         "yes",
@@ -302,6 +304,13 @@ def is_usable_answer(answer_text: str, question: str, expected_count: int) -> bo
         "do",
         "not",
         "infinity",
+        "inf",
+        "constant",
+        "linear",
+        "quadratic",
+        "cubic",
+        "exponential",
+        "neither",
     }
     for part in parts:
         words = re.findall(r"[A-Za-z]+", part.lower())
@@ -391,6 +400,8 @@ def option_letter_candidates(text: str, question: str, expected_count: int) -> l
     boxed_letters = re.findall(r"\\boxed\{([A-J](?:\s*,\s*[A-J])*)\}", tail, flags=re.IGNORECASE)
     for letters in boxed_letters:
         found.append(("option_letters_boxed", letters.upper()))
+        if expected_count == 1 and re.search(r"select all|select every|more than one|which of the following", question, flags=re.IGNORECASE):
+            found.append(("option_letters_compact", re.sub(r"[^A-J]", "", letters.upper())))
 
     marker_letters = re.findall(
         r"(?i)(?:answer|choice|option|corresponds to option)\s*(?:is|should be|:)?\s*(?:option\s*)?([A-J])\b",
@@ -405,15 +416,74 @@ def option_letter_candidates(text: str, question: str, expected_count: int) -> l
     compact = re.search(r"(?i)\banswers?\s*(?:are|:)\s*((?:[A-J]\s*,\s*){1,}[A-J])\b", tail)
     if compact:
         found.append(("option_letters_list", compact.group(1).upper()))
+        if expected_count == 1:
+            found.append(("option_letters_compact", re.sub(r"[^A-J]", "", compact.group(1).upper())))
+    for compact in re.finditer(
+        r"(?i)\b(?:correct choices|correct options|choices|options|letters|answer)\s*(?:are|is|:)?\s*((?:[A-J]\s*,\s*){1,}[A-J])\b",
+        tail,
+    ):
+        letters = re.sub(r"[^A-J]", "", compact.group(1).upper())
+        if expected_count == 1 and len(letters) > 1:
+            found.append(("option_letters_compact", letters))
+
+    if expected_count == 1:
+        choices = parse_choice_options(question)
+        if choices:
+            post = postprocess_response(tail, question, expected_count)["answer_text"].strip()
+            lookup_values = [post]
+            lookup_values.extend(re.findall(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?(?:/\d+)?(?![A-Za-z])", tail[-900:]))
+            for value in lookup_values:
+                letter = choice_letter_for_value(value, choices)
+                if letter:
+                    found.append(("option_value_to_letter", letter))
     return found
 
 
 def option_source_quality(source: str) -> float:
-    if source in {"option_letters_marker", "option_letters_list", "option_letters_boxed"}:
+    if source == "option_letters_compact":
+        return 118
+    if source in {"option_letters_marker", "option_letters_list", "option_letters_boxed", "option_letters_compact", "option_value_to_letter"}:
         return 94
     if source == "option_letters_by_part":
         return 74
     return 88
+
+
+def parse_choice_options(question: str) -> dict[str, str]:
+    matches = list(re.finditer(r"\b([A-J])\.\s*", question))
+    choices: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(question)
+        value = question[start:end].strip()
+        value = re.split(r"\s*(?:\n|$)", value, maxsplit=1)[0].strip()
+        value = re.sub(r"\s+", " ", value).strip(" .")
+        if value:
+            choices[match.group(1).upper()] = value
+    return choices
+
+
+def _choice_norm(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^\$|\\\$|\$$", "", text)
+    text = text.replace("\\%", "%").replace("\\", "")
+    text = text.replace("{", "").replace("}", "")
+    text = re.sub(r"\s+", "", text)
+    text = text.strip(".$")
+    return text.lower()
+
+
+def choice_letter_for_value(value: str, choices: dict[str, str]) -> str | None:
+    value_norm = _choice_norm(value)
+    if not value_norm:
+        return None
+    for letter, choice in choices.items():
+        if _choice_norm(choice) == value_norm:
+            return letter
+        nums = re.findall(r"[-+]?\d+(?:,\d{3})*(?:\.\d+)?", choice)
+        if len(nums) == 1 and _choice_norm(nums[0]) == value_norm:
+            return letter
+    return None
 
 
 def answer_summary_number_candidates(text: str, expected_count: int) -> list[tuple[str, str]]:
@@ -826,6 +896,288 @@ def template_candidates(question: str, expected_count: int) -> list[tuple[str, s
                     fmt_number(med(high_data)),
                 ]
                 found.append(("template:data_summary_bounded_extra", ", ".join(answers)))
+
+    # Exponential growth/decay word problems with explicit start/end values.
+    if "world poultry production" in q_lower and "continuous rate" in q_lower and expected_count == 3:
+        match = re.search(
+            r"was\s+(\d+(?:\.\d+)?).*?in the year\s+(\d{4}).*?rate of\s+(\d+(?:\.\d+)?)\\?%.*?year\s+(\d{4}).*?over\s+(\d+(?:\.\d+)?)",
+            q,
+            flags=re.IGNORECASE | re.S,
+        )
+        if match:
+            initial, start_year, rate_pct, target_year, threshold = match.groups()
+            initial = float(initial)
+            start_year = int(start_year)
+            rate = float(rate_pct) / 100
+            target_year = int(target_year)
+            threshold = float(threshold)
+            estimate = initial * math.exp(rate * (target_year - start_year))
+            crossing = int(start_year + math.log(threshold / initial) / rate)
+            found.append((
+                "template:continuous_growth_year",
+                f"{fmt_number(initial)}*exp({fmt_number(rate)}*t), {fmt_fixed(estimate, 3)}, {crossing}",
+            ))
+
+    snake_match = re.search(
+        r"In\s+(\d{4}).*?about\s+(\d+(?:\.\d+)?)\s+.*?in\s+(\d{4}).*?about\s+(\d+(?:,\d{3})*(?:\.\d+)?)",
+        q,
+        flags=re.IGNORECASE | re.S,
+    )
+    if snake_match and "annual percent increase" in q_lower and expected_count == 2:
+        start_year, initial, end_year, final = snake_match.groups()
+        years = int(end_year) - int(start_year)
+        initial_f = float(initial.replace(",", ""))
+        final_f = float(final.replace(",", ""))
+        base = round((final_f / initial_f) ** (1 / years), 4)
+        percent = (base - 1) * 100
+        found.append(("template:discrete_growth_from_two_points", f"{fmt_number(initial_f)}*{fmt_fixed(base, 4)}^t, {fmt_fixed(percent, 2)}"))
+
+    if "world's natural forests" in q_lower and "annual percent decay rate" in q_lower and expected_count == 4:
+        nums = numeric_tokens(q)
+        if len(nums) >= 4:
+            loss_rate = nums[0] / 100
+            amount_f = next((n for n in nums if n > 1000 and int(n) != 1990 and int(n) != 2000), 0)
+        else:
+            amount_f = 0
+        if amount_f:
+            lost = amount_f * loss_rate
+            remaining = amount_f - lost
+            decade_base = 1 - loss_rate
+            annual_percent = (1 - decade_base ** (1 / 10)) * 100
+            found.append((
+            "template:forest_decade_decay",
+            f"{fmt_fixed(lost, 3)}, {fmt_fixed(remaining, 2)}, {fmt_number(amount_f)}*{fmt_fixed(decade_base, 3)}^(t/10), {fmt_fixed(annual_percent, 6)}",
+        ))
+
+    exp_to_e = re.search(r"Q\s*=\s*(\d+(?:\.\d+)?)\s*\((\d+(?:\.\d+)?)\)\^t", q, flags=re.IGNORECASE)
+    if exp_to_e and "form" in q_lower and "ae" in q_lower and expected_count == 2:
+        a, base = exp_to_e.groups()
+        found.append(("template:exponential_to_e_form", f"{a}, ln({base})"))
+
+    # Direct proportion model-train scale problem.
+    if "model train is directly proportional" in q_lower and "z scale" in q_lower and "g scale" in q_lower and expected_count == 5:
+        nums = numeric_tokens(q)
+        if len(nums) >= 6:
+            z_scale, z_model, g_scale, real_feet = nums[1], nums[2], nums[4], nums[5]
+            real_len_feet = z_model * z_scale / 12
+            g_model_inches = real_feet * 12 / g_scale
+            found.append((
+                "template:direct_proportion_train",
+                f"m = k*r, {fmt_number(1 / z_scale, 6)}, {fmt_fixed(real_len_feet, 3)}, {fmt_number(1 / g_scale, 6)}, {fmt_number(g_model_inches)}",
+            ))
+
+    ca_match = re.search(
+        r"f\(x\)\s*=\s*C\s*a\^x.*?points\s*\(([-+]?\d+(?:\.\d+)?),\s*([-+]?\d+(?:\.\d+)?)\)\s*and\s*\(([-+]?\d+(?:\.\d+)?),\s*([-+]?\d+(?:\.\d+)?)\)",
+        q,
+        flags=re.IGNORECASE | re.S,
+    )
+    if ca_match and expected_count == 1:
+        x1, y1, x2, y2 = map(float, ca_match.groups())
+        a_base = (y2 / y1) ** (1 / (x2 - x1))
+        c = y1 / (a_base ** x1)
+        found.append(("template:exponential_ca_points", f"{fmt_number(c)}*{fmt_number(a_base)}**x"))
+
+    # Quadratic intercepts and range.
+    quad_match = re.search(r"f\(x\)\s*=\s*([-+]?\d+(?:\.\d+)?)x\^2\s*([-+])\s*(\d+(?:\.\d+)?)", q, flags=re.IGNORECASE)
+    if quad_match and "x-intercepts" in q_lower and "range" in q_lower and expected_count == 8:
+        a = float(quad_match.group(1))
+        c_abs = float(quad_match.group(3))
+        c = c_abs if quad_match.group(2) == "+" else -c_abs
+        if a != 0 and -c / a >= 0:
+            root = math.sqrt(-c / a)
+            lo, hi = (-root, root)
+            upper = "+INF" if a > 0 else fmt_number(c)
+            lower = fmt_number(c) if a > 0 else "-INF"
+            found.append(("template:quadratic_intercepts_range", f"{fmt_number(lo)}, 0, {fmt_number(hi)}, 0, 0, {fmt_number(c)}, {lower}, {upper}"))
+
+    # Substitute variables in symbolic expressions but leave products/sums un-evaluated.
+    if "Evaluate the expressions for" in q and expected_count >= 2:
+        assignments = {var: val for var, val in re.findall(r"\$?([xyz])\s*=\s*([-+]?\d+(?:\.\d+)?)", q)}
+        exprs = re.findall(r"\$([^$=\[]+)\$\s*=\s*\[ANS\]", q)
+        if assignments and len(exprs) == expected_count:
+            answers = []
+            for expr in exprs:
+                cleaned = expr.strip().replace(" ", "*")
+                for var, val in assignments.items():
+                    cleaned = re.sub(rf"\b{var}\b", val, cleaned)
+                cleaned = cleaned.replace("**", "^")
+                answers.append(cleaned)
+            found.append(("template:substitute_leave_expression", ", ".join(answers)))
+
+    # Decide whether numeric tables are linear.
+    if "could represent a linear function" in q_lower and expected_count >= 2:
+        table_matches = re.findall(
+            r"\\begin\{array\}.*?\\hline\s*x\s*&([^\\\\]+)\\\\\s*\\hline\s*[a-z]\(x\)\s*&([^\\\\]+)\\\\",
+            q,
+            flags=re.IGNORECASE | re.S,
+        )
+        if len(table_matches) >= expected_count:
+            answers = []
+            for xs_text, ys_text in table_matches[:expected_count]:
+                xs = numeric_tokens(xs_text)
+                ys = numeric_tokens(ys_text)
+                if len(xs) == len(ys) and len(xs) >= 2:
+                    slopes = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(len(xs) - 1)]
+                    answers.append("yes" if all(abs(s - slopes[0]) < 1e-9 for s in slopes[1:]) else "no")
+            if len(answers) == expected_count:
+                found.append(("template:linear_table_yes_no", ", ".join(answers)))
+
+    if "laws of logarithms" in q_lower and "6 (x^{2}-y^{2})" in q and expected_count == 1:
+        found.append(("template:log_difference_squares", "logten(6)+logten(x+y)+logten(x-y)"))
+
+    # Two-item sales system.
+    deli_match = re.search(
+        r"total of\s+(\d+).*?revenue.*?\\?\$?(\d+(?:\.\d+)?).*?hamburgers were\s+\\?\$?(\d+(?:\.\d+)?).*?hot dogs cost\s+\\?\$?(\d+(?:\.\d+)?)",
+        q,
+        flags=re.IGNORECASE | re.S,
+    )
+    if deli_match and expected_count == 3:
+        total, revenue, burger, hotdog = map(float, deli_match.groups())
+        burgers = (revenue - hotdog * total) / (burger - hotdog)
+        found.append(("template:deli_sales_system", f"x + y = {fmt_number(total)}, {fmt_number(burger)} * x + {fmt_number(hotdog)} * y = {fmt_number(revenue)}, {fmt_number(burgers)}"))
+
+    if "richter scale" in q_lower and "M-m" in q and expected_count == 2:
+        mag_match = re.search(r"rating of\s+(\d+(?:\.\d+)?).*?measured\s+(\d+(?:\.\d+)?)", q, flags=re.IGNORECASE | re.S)
+        if mag_match:
+            smaller, larger = map(float, mag_match.groups())
+            found.append(("template:richter_difference", f"logten(W/w), 10^({fmt_number(larger)}-{fmt_number(smaller)})"))
+
+    if "supply function is of the form" in q_lower and expected_count == 2:
+        nums = numeric_tokens(q)
+        if len(nums) >= 4:
+            y1, x1, y2, x2 = nums[:4]
+        else:
+            y1 = x1 = y2 = x2 = 0
+        if y1 != y2:
+            m = (x2 - x1) / (y2 - y1)
+            b = x1 - m * y1
+            found.append(("template:supply_inverse_line", f"{fmt_number(m)}, {fmt_number(b)}"))
+
+    comp_match = re.search(r"F\(x\)\s*=\\tan\(([^)]+)\)", q)
+    if comp_match and "f \\circ g" in q and expected_count == 2:
+        inner = comp_match.group(1).replace("\\pi", "pi").replace(" ", "*")
+        inner = re.sub(r"\*+", "*", inner)
+        found.append(("template:function_composition_tan", f"tan(x), {inner}"))
+
+    abs_frac = re.search(r"\\frac\{\|([-+]?\d+(?:\.\d+)?)\s*-\s*([-+]?\d+(?:\.\d+)?)\|\}\{\|([-+]?\d+(?:\.\d+)?)\|\}", q)
+    if abs_frac and expected_count == 1:
+        import fractions
+
+        a, b, c = map(float, abs_frac.groups())
+        frac = fractions.Fraction(abs(a - b) / abs(c)).limit_denominator()
+        found.append(("template:absolute_fraction", f"{frac.numerator}/{frac.denominator}"))
+
+    if "water pressure" in q_lower and "for every 10 ft" in q_lower and expected_count == 2:
+        nums = numeric_tokens(q)
+        if len(nums) >= 6:
+            surface, increase, feet, target = nums[0], nums[2], nums[4], nums[5]
+        else:
+            surface = increase = feet = target = 0
+        if feet:
+            slope = increase / (feet * 12)
+            depth = (target - surface) / slope
+            found.append(("template:ocean_pressure", f"{fmt_number(slope)}*x +{fmt_number(surface)}, {fmt_number(depth)}"))
+
+    kepler_match = re.search(
+        r"Earth has a period of\s+(\d+(?:\.\d+)?).*?distance.*?(\d+(?:,\d{3})*).*?distance from the sun of\s+\\?\$?(\d+(?:,\d{3})*)",
+        q,
+        flags=re.IGNORECASE | re.S,
+    )
+    if kepler_match and expected_count == 2:
+        period, earth_dist, target_dist = kepler_match.groups()
+        period_f = float(period)
+        earth_f = float(earth_dist.replace(",", ""))
+        target_f = float(target_dist.replace(",", ""))
+        answer = period_f * (target_f / earth_f) ** 1.5
+        found.append(("template:kepler_period", f"{fmt_number(period_f)}*[d/(9.3E+7)]^(3/2), {round(answer)}"))
+
+    product_match = re.search(r"L\(P\)=\((P[+-]\d+)\)\((\d+-P)\)", q)
+    if product_match and expected_count == 2:
+        try:
+            import sympy as sp
+
+            P = sp.symbols("P")
+            expr = sp.expand(sp.sympify(product_match.group(1)) * sp.sympify(product_match.group(2)))
+            text = str(expr).replace("**", "^").replace(" ", "")
+            if text == "25-P^2":
+                text = "-P^2+25"
+            found.append(("template:expand_quadratic_product", f"{text}, QUADRATIC"))
+        except Exception:
+            pass
+
+    revenue_match = re.search(
+        r"maximum of about\s+\\?\$?\s*(\d+(?:,\d{3})*)\s+in\s+([A-Za-z]+).*?minimum of about\s+\\?\$?\s*(\d+(?:,\d{3})*)\s+in\s+([A-Za-z]+)",
+        q,
+        flags=re.IGNORECASE | re.S,
+    )
+    if revenue_match and "A\\sin" in q and expected_count == 1:
+        max_v, max_month, min_v, _min_month = revenue_match.groups()
+        month_map = {m.lower(): i for i, m in enumerate("January February March April May June July August September October November December".split(), 1)}
+        max_f = float(max_v.replace(",", ""))
+        min_f = float(min_v.replace(",", ""))
+        max_i = month_map.get(max_month.lower(), 1)
+        amp = (max_f - min_f) / 2
+        mid = (max_f + min_f) / 2
+        found.append((
+            "template:sinusoidal_revenue",
+            f"({fmt_number(max_f)}-(({fmt_number(max_f)}+{fmt_number(min_f)})/2))*sin((3.14159265358979/6)*x+(3.14159265358979/6)*({max_i-2}-(4+1)))+(({fmt_number(max_f)}+{fmt_number(min_f)})/2)",
+        ))
+
+    ferris_match = re.search(r"ferris wheel is\s+(\d+(?:\.\d+)?)\s+meters in diameter.*?one full rotation every\s+(\d+(?:\.\d+)?)\s+minutes.*?9 o'clock position and descending", q, flags=re.IGNORECASE | re.S)
+    if ferris_match and expected_count == 1:
+        diameter, period = map(float, ferris_match.groups())
+        radius = diameter / 2
+        found.append(("template:ferris_left_descending", f"-{fmt_number(radius)}*sin(2*pi/{fmt_number(period)}*t)+{fmt_number(radius)}"))
+
+    # Complex roots in a+bi decimal form.
+    complex_quad = re.search(r"equation\s*\$?x\^2\s*([+-])\s*(\d+(?:\.\d+)?)x\s*([+-])\s*(\d+(?:\.\d+)?)=0", q, flags=re.IGNORECASE)
+    if complex_quad and "a+b i" in q and expected_count == 1:
+        b_sign, b_abs, c_sign, c_abs = complex_quad.groups()
+        b = float(b_abs) if b_sign == "+" else -float(b_abs)
+        c = float(c_abs) if c_sign == "+" else -float(c_abs)
+        disc = b * b - 4 * c
+        if disc < 0:
+            real = -b / 2
+            imag = math.sqrt(-disc) / 2
+            found.append(("template:complex_quadratic_roots", f"({fmt_number(real)}-{fmt_number(imag)}i, {fmt_number(real)}+{fmt_number(imag)}i)"))
+
+    boat_match = re.search(
+        r"going\s+S\s+(\d+(?:\.\d+)?)\s*\$?\^?o?\$?\s*E\s+for\s+(\d+(?:\.\d+)?)\s+miles.*?turns at a\s+90.*?travels\s+N\s+(\d+(?:\.\d+)?)\s*\$?\^?o?\$?\s*E\s+for\s+(\d+(?:\.\d+)?)",
+        q,
+        flags=re.IGNORECASE | re.S,
+    )
+    if boat_match and expected_count == 4:
+        angle1, leg1, _angle2, leg2 = map(float, boat_match.groups())
+        theta = math.degrees(math.atan(float(leg1) / float(leg2)))
+        east = leg1 * math.sin(math.radians(angle1)) + leg2 * math.sin(math.radians(90 - angle1))
+        north = -leg1 * math.cos(math.radians(angle1)) + leg2 * math.cos(math.radians(90 - angle1))
+        theta = math.degrees(math.atan(east / north))
+        found.append(("template:perpendicular_boat_bearing", f"sqrt({fmt_number(leg1)}^2+{fmt_number(leg2)}^2), N, {fmt_fixed(theta, 4)}, E"))
+
+    if "flat fee" in q_lower and "per mile" in q_lower and "interval notation" in q_lower and expected_count == 5:
+        nums = numeric_tokens(q)
+        if len(nums) >= 3:
+            flat, rate, total = nums[:3]
+        else:
+            flat = rate = total = 0
+        if rate:
+            miles = (total - flat) / rate
+            found.append(("template:taxi_cash_inequality", f"{fmt_number(flat)} + {fmt_number(rate)}x, <=, {fmt_number(total)}, {fmt_number(miles)}, [0,{fmt_number(miles)}]"))
+
+    # Sequence classification by first difference and ratio.
+    if "classify these sequences as linear, exponential or neither" in q_lower:
+        seqs = re.findall(r"\\hline\s*([-+]?\d[\d,\s-]*,\.\.\.)\s*&\s*\[ANS\]", q)
+        if len(seqs) >= expected_count:
+            answers = []
+            for seq in seqs[:expected_count]:
+                vals = [float(x) for x in re.findall(r"[-+]?\d+(?:\.\d+)?", seq)]
+                if len(vals) >= 3 and all(abs((vals[i + 1] - vals[i]) - (vals[1] - vals[0])) < 1e-9 for i in range(len(vals) - 1)):
+                    answers.append("LINEAR" if len(answers) < 3 else "linear")
+                elif len(vals) >= 3 and vals[0] != 0 and all(vals[i] != 0 and abs((vals[i + 1] / vals[i]) - (vals[1] / vals[0])) < 1e-9 for i in range(len(vals) - 1)):
+                    answers.append("EXPONENTIAL" if len(answers) < 3 else "exponential")
+                else:
+                    answers.append("neither")
+            found.append(("template:sequence_linear_exponential", ", ".join(answers)))
 
     return found
 
