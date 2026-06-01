@@ -1,0 +1,115 @@
+--- template page 1 ---
+Presentation Title
+Presenter Name
+
+
+--- template page 2 ---
+Summary
+3 - 4 sentence summary of the presentation 
+●
+Who is in your team
+●
+How did you solve the problem
+●
+What have you learned
+
+
+--- template page 3 ---
+Key Words
+Deep 
+Sequence 
+Model
+Computer 
+Vision
+
+
+--- template page 4 ---
+Introduction 
+
+
+--- template page 5 ---
+Team Introduction
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 6 ---
+Methodology
+
+
+--- template page 7 ---
+Data Processing
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 8 ---
+Deep Learning Model
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 9 ---
+Engineering Tricks 
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 10 ---
+Experiments
+
+
+--- template page 11 ---
+Experiment 1
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 12 ---
+Experiment 2
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 13 ---
+Discussion
+
+
+--- template page 14 ---
+Strength/Weakness/Improvement
+●
+3 Strengths
+●
+3 Weaknesses
+●
+Improvements
+
+
+--- template page 15 ---
+What have you learned
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
+--- template page 16 ---
+Future Work
+Lorem ipsum dolor sit amet, 
+consectetur adipiscing elit, sed do 
+eiusmod tempor incididunt ut labore et 
+dolore magna aliqua
+
+
