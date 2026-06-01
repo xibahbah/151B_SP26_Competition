@@ -20,6 +20,7 @@ from typing import Any
 
 
 MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
+REPO_ROOT = Path(__file__).resolve().parent
 
 # High-confidence deterministic FRQ answers derived from recurring private
 # problem templates. These append a final boxed answer while preserving the raw
@@ -80,10 +81,15 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row) + "\n")
 
 
+def repo_path(path: str | Path) -> Path:
+    path = Path(path)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
 def run_step(name: str, cmd: list[str]) -> None:
     print(f"\n=== {name} ===", flush=True)
     print(" ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
 
 def final_box(response: str) -> str:
@@ -128,9 +134,9 @@ def run_inference(
 ) -> Path:
     """Run the full private-set pipeline and return the submission CSV path."""
 
-    data_path = Path(data_path)
-    output_csv = Path(output_csv)
-    results_dir = Path(results_dir)
+    data_path = repo_path(data_path)
+    output_csv = repo_path(output_csv)
+    results_dir = repo_path(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
     mcq_path = results_dir / "private_mcq.jsonl"
@@ -228,7 +234,7 @@ def run_inference(
         for row in merged:
             writer.writerow({"id": row["id"], "response": row["response"]})
 
-    secondary_csv = Path("results/submission.csv")
+    secondary_csv = REPO_ROOT / "results/submission.csv"
     if secondary_csv.resolve() != output_csv.resolve():
         secondary_csv.parent.mkdir(parents=True, exist_ok=True)
         with secondary_csv.open("w", newline="") as f:
