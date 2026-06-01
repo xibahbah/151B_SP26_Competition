@@ -1,7 +1,14 @@
-.claude
-.venv
-results
-data
-__pycache__
-LICENSEdata/private.jsonl
+.DS_Store
+.Rhistory
+.claude/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Runtime artifacts
+results/
+outputs/
+*.log
+
+# Private competition data should not be committed.
 data/private.jsonl

@@ -1,314 +1,0 @@
---- milestone page 1 ---
-CSE 151B/251B Milestone Report:
-When Self-Consistency Doesn't Help:
-Token Budget Constraints in Small Thinking Models
-Keith Gong
-A18492723, Department of Data Science, University of California, San Diego
-x4gong@ucsd.edu
-Abstract
-The CSE 151B Spring 2026 Math Reasoning Competition asks a small open-weight model
-to answer 1126 math questions (375 multiple-choice, 751 free-form). I took the starter notebook
-provided by the course and introduced a couple of changes to try to enhance it: more constraints
-on the output format, self-consistency using majority voting, and some engine-level changes to
-vLLM. On a 100-question subset of the public split, the starter answers with 61.0% accuracy
-(71.1% MCQ, 54.8% free-form). My best modication ends up about the same. The inter-
-esting part is why. Every attempt to improve accuracy ran into a single recurring constraint:
-Qwen3-4B-Thinking produces very long thinking traces, and the per-question token budget is
-the limiting resource. Anything that divides the budget (self-consistency) or shrinks it (trunca-
-tion to free up KV cache) costs more accuracy than the technique recovers. The milestone has
-no clean win, but it has a clear nding, and that nding sets up a concrete plan for the nal
-report.
-1
-Introduction
-Problem denition.
-The task is closed-book math problem solving. There are two question
-types: multiple-choice (a problem statement followed by 4 to 10 lettered options) and free-form
-(a problem with one or more [ANS] placeholders that require numeric or symbolic answers). The
-model generates a free-text answer. A grader extracts the answer from the nal \boxed{} in that
-response and checks it against a gold answer: exact letter match for MCQ, symbolic equivalence
-(SymPy in the background) for free-form. The model in use is Qwen3-4B-Thinking-2507, served by
-vLLM with INT8 weight quantization on a single GPU.
-Problem signicance.
-Mathematical reasoning has become a standard probe for how well a
-language model actually understands instead of just retrieving. It is also directly useful in tutoring,
-scientic computing, and verifying chains of formal reasoning.
-The competition imposes a nice
-constraint that frontier benchmarks typically skip: the model is small (4B parameters) and runs
-under quantization on commodity hardware. Anything that works here is the kind of thing that
-could deploy.
-1
-
-
---- milestone page 2 ---
-Technical challenge.
-Three diculties shape the project. First, Qwen3-4B-Thinking is a think-
-ing model: before producing a nal answer it emits a long inner dialogue (the thinking trace),
-sometimes thousands of tokens long. The thinking trace is where most of the accuracy comes from,
-but it also dominates the cost of inference. Second, the free-form judger checks symbolic equality,
-which means output format matters a lot: 0.5 and \frac{1}{2} are equivalent only if both are
-canonicalized by the judger, so a small formatting slip turns a correct calculation into a wrong
-submission. Third, the GPU has a limited memory budget. Self-consistency (multiple samples per
-question) slices that budget, and the easiest lever to pull is to shorten the length of samples, but
-Qwen3-4B-Thinking does not like being cut short.
-Contributions.
-The starter notebook is a working pipeline. Its weaknesses are mostly the kind
-that don't show up until you start poking at it. The prompt is short and unspecic about format.
-The engine cong is conservative (GPU utilization 50%, prex caching o).
-The MCQ letter
-extractor uses a regex that only matches a single character inside \boxed{}, which is brittle. The
-notebook samples one completion per question, with no use of self-consistency. My contributions
-are best framed as a set of experiments and one nding:
- I tested three modications to the starter (strict output-format prompts, MCQ self-consistency,
-and aggressive vLLM engine settings) under a 100-question A/B against the starter.
- I document one real, reproducible gain: a strict free-form prompt adds about 1.6 points to
-free-form accuracy.
- I identify a constraint that explains the rest of the results: per-question max_tokens is the
-binding resource for Qwen3-4B-Thinking, and any technique that reduces or divides it costs
-more than it earns back.
- I rewrote the MCQ letter extractor to handle the failure mode I encountered (truncated
-responses with stray capital letters). This x matters only after the truncation problem itself
-is addressed.
-Mostly, what I was able to learn comes from the experiments below. The story is not that the
-improvements were miscongured. It is that the obvious improvements run into a real constraint.
-2
-Methods
-Problem setting.
-The setup is straightforward. For every question, there is a type-specic system
-prompt (one for MCQ, one for free-form) and a user prompt built from the question text. The model
-produces a free-text response. The extractor reads the last occurrence of \boxed{} in that response
-and treats its contents as the model's answer. For MCQ, the extracted letter is compared to the
-gold letter. For free-form, the extracted expression is submitted to the course's symbolic judger,
-which checks numeric and algebraic equivalence rather than string identity. Per-question accuracy
-is the fraction of questions the model gets right under this rule. I do not train any parameters; the
-optimization is over prompts, sampling parameters, and the extractor.
-What I tried.
-I worked in three layers. The rst was the system prompt. The starter uses a
-short instruction (solve step-by-step, put your nal answer in \boxed{}). I replaced this with
-a numbered list of ve strict rules for free-form (one boxed answer, exact closed form, answers
-separated by commas for multi-blank questions, value only, no intermediate boxes) and six for
-2
-
-
---- milestone page 3 ---
-MCQ (letter only in the box, valid letter set repeated in the user prompt). I added one worked
-example per type.
-The second layer was self-consistency. For MCQ I sampled k = 5 completions, extracted a letter
-from each, and majority-voted. I tried the same idea for free-form, with a string-normalization
-step before voting. I chose a lower temperature (T = 0.4) than the T = 0.8 recommended in the
-self-consistency paper, because at high temperature this model produced clearly inferior individual
-samples.
-The third layer was engine conguration.
-I enabled prex caching (the system prompt is
-shared across all questions of the same type and therefore should not be recomputed), bumped
-gpu_memory_utilization from 0.50 to 0.90 to give vLLM more KV cache, and raised max_num_seqs
-to allow more requests in parallel.
-Why not bigger changes.
-I considered netuning Qwen3-4B on a math instruction dataset and
-ensembling two small models. Both are realistic for the nal report. They were too expensive for
-the milestone, particularly given the engineering time lost to environment setup (the DeepGEMM
-error in vLLM, an accelerate missing-import error, several kernel restarts that wiped state). I had
-roughly ve hours of focused work on the milestone, and I spent about two of those on infrastructure
-before any experiment ran.
-3
-Experiments
-3.1
-Baselines
- Starter prompt (baseline). The unmodied course-provided prompts and engine settings.
-INT8 BitsAndBytes quantization, temperature 0.6, top-p 0.95, max_tokens 32768, GPU uti-
-lization 0.50, prex caching o.
- Variant A: strict prompts only. Same model with the engine xes described above, plus
-the strict free-form prompt.
-MCQ uses the unmodied starter prompt.
-One sample per
-question at temperature 0.6.
- Variant B: MCQ self-consistency. Starter prompts. MCQ uses k = 5 samples at temper-
-ature 0.4 with letter-vote. Free-form is a single sample.
- Sanity check (preview of Variant B). Same conguration as B but on a 20-question
-subset, used to decide whether to commit to the longer full run.
-I did not run smaller deep-learning baselines (MLP, linear regression). The task is symbolic gener-
-ation, not regression or xed-feature classication, so an MLP would not be a meaningful baseline.
-The starter notebook is the natural reference.
-3.2
-Evaluation
-I evaluate on the rst 100 questions of the public split (38 MCQ, 62 free-form). MCQ is scored by ex-
-act letter match. Free-form is scored by the course's judger via auto_judge with strict_extract=False,
-which uses SymPy for symbolic equivalence under the hood. I did not submit to Kaggle: the Piazza
-clarication states that Kaggle scores are not required for the milestone, and a subset comparison
-is sucient.
-3
-
-
---- milestone page 4 ---
-3.3
-Implementation details
-All inference runs on a single GPU on the course DataHub. The model is Qwen3-4B-Thinking-2507
-served by vLLM with INT8 BitsAndBytes weight quantization. For Variant A and Variant B I set
-enable_prefix_caching=True, gpu_memory_utilization=0.90, and max_num_seqs=512 (256 for
-the larger max_model_len version). The baseline uses the starter defaults. Sampling temperatures
-and top-p/top-k follow the Qwen3 recommended settings (T = 0.6, top-p 0.95, top-k 20) for single-
-sample runs. The self-consistency temperature was T = 0.4, chosen after a small comparison against
-T = 0.8 on a handful of questions where the higher temperature noticeably degraded individual
-samples.
-3.4
-Results
-Table 1 shows the accuracy on the rst 100 public questions. The numbers are from one run only;
-see Discussion for variance and caveats.
-Table 1: Accuracy on the rst 100 public questions (38 MCQ, 62 free-form). All numbers are from
-a single run. Variant B was attempted twice. The rst 20-question sanity run at max_tokens=8740
-is shown here.
-The second 100-question attempt at max_tokens=14884 crashed at 89% MCQ
-completion and produced no nal number; see the discussion below.
-System
-MCQ (%)
-Free-form (%)
-Overall (%)
-Starter prompt (baseline)
-71.05
-54.84
-61.00
-Variant A: strict prompts, single sample
-52.63
-56.45
-55.00
-Sanity (Variant B preview, 20 questions)
-44.4 (4/9)
-54.5 (6/11)
-50.0 (10/20)
-Table 1 is unkind to my changes. The starter run posts 61.0% overall, with MCQ at 71.1% and
-free-form at 54.8%. Variant A (strict prompt plus engine xes) ends up at 55.0% overall. Free-form
-ticks up by about 1.6 points (54.84 to 56.45), consistent with the prompt nudging the model toward
-cleaner boxed output. MCQ collapses by 18 points (71.05 to 52.63). The sanity check for Variant
-B, on a 20-question slice, lands at 50% overall with MCQ at 44.4%.
-What went wrong with the MCQ numbers.
-The MCQ collapse in Variant A and Variant
-B turned out to be the same problem in two disguises.
-Variant A used max_tokens=8192 per
-generation; Variant B's rst attempt used max_tokens=4096. I picked those values because Qwen3-
-4B-Thinking with the starter's max_tokens=32768 is slow (about 12 seconds per question on the
-optimized engine, scaling to several hours for the full 1126), and I wanted to keep experiments
-under an hour. The mistake was assuming MCQ requires less thinking just because the answer is a
-letter. It doesn't. The model still thinks for several thousand tokens before committing to a letter,
-especially on the harder integral and combinatorics problems early in the MCQ set. When the
-thinking trace hits the max_tokens ceiling, the response is truncated before it ever writes \boxed{},
-and the extractor falls back to scanning for any capital letter A through J, which is essentially
-guessing. The free-form judger is more forgiving here because it can sometimes recover an answer
-from intermediate work in the response; the MCQ extractor cannot.
-The trade-o self-consistency runs into.
-Self-consistency is supposed to help by averaging
-away the noise in any single sample. The catch is that with k = 5 samples per question, the KV
-cache budget is divided ve ways, so the per-sample max_tokens has to come down. I tried this
-4
-
-
---- milestone page 5 ---
-in two congurations. The rst used max_model_len=10240 with max_tokens=8740 and produced
-MCQ accuracy of 44.4% on the sanity subset, well below baseline. The second attempt reloaded
-the engine with max_model_len=16384 and max_tokens=14884, which should have removed the
-truncation problem entirely. That run reached 89% of the way through MCQ before the kernel
-crashed, after over 34 minutes on the single batch. I do not have a nal accuracy number for that
-conguration. What I do have is the unnished progress trace, which showed sequences completing
-at a stable rate, consistent with a clean run that simply ran out of compute window rather than a
-conguration error.
-What I think is going on.
-The pattern across all three experiments is the same: anything
-that touches the per-question token budget moves MCQ accuracy a lot.
-Increasing the budget
-helps; reducing it hurts disproportionately. Free-form is more robust because the judger can sh
-an answer out of partial work. MCQ is brittle because a single \boxed{} has to land. With that
-in mind, the best modication I have is the strict free-form prompt (Variant A), which gives a real
-but small free-form improvement (+1.6 points) at the cost of a conguration that hurts MCQ. The
-right resolution is to keep the strict prompt for free-form and keep the starter prompt and starter
-max_tokens for MCQ; I have not yet run that combined version end-to-end on 100 questions.
-Qualitative example.
-The following is a typical MCQ from the failure mode in Variant A. The
-gold answer is option F; the model's thinking trace is interrupted and never commits to a letter.
-Question (id 1):
-R +∞
-−∞
-a3/2
-s2+a2 ds =? (10 options AJ)
-Variant A response (last 200 characters): ...his. So given the problem as stated,
-the answer is pi sqrt(a), which isn't listed. However, among the options, if we assume that
-the problem had a dierent integral, for example, if the integral was int_{-infty}infty
-(1/(s2 + a2)) ds, then the answer would be pi/a. If we
-Extracted letter: A (a stray capital letter from earlier in the trace, not the model's
-answer)
-Gold: F (which is π/a, the answer the model was about to commit to before it was cut
-o)
-The model was on track to the correct answer. It ran out of tokens. The extractor returned a letter
-that appeared earlier in the text. This is the textbook truncation failure, and it accounts for most
-of the MCQ collapse in the smaller-budget variants.
-4
-Discussion
-Achievements.
-I have a working end-to-end pipeline, documented engine conguration, a 100-
-question A/B test against the starter, two follow-up variants with dierent sampling regimes, and a
-clear account of why the obvious improvements did not improve things. The pipeline saves responses
-incrementally, so future runs can resume after a kernel restart. The one component I plan to keep
-is the strict free-form prompt, since its +1.6 points on free-form is real even if the rest of Variant
-A's conguration is not.
-Bottlenecks and mitigation.
-The dominant bottleneck is inference latency, which interacts
-badly with the experimental loop. The starter conguration on plain Transformers averaged about
-89 seconds per question, which extrapolates to 28 hours on the full 1126.
-Switching to vLLM
-5
-
-
---- milestone page 6 ---
-with INT8 quantization, prex caching, and gpu_memory_utilization=0.90 brought per-question
-time down to about 12 seconds on a single sample, fast enough to make iteration possible. The
-remaining bottleneck is the trade-o the rest of this paper is about: per-sample max_tokens is
-the binding constraint, and self-consistency only helps if I can pay for it.
-Smaller bottlenecks
-were environment setup: vLLM raised a DeepGEMM backend is not available error on rst load
-(resolved by setting VLLM_USE_DEEP_GEMM=0), an accelerate missing-package error when I briey
-tried the Transformers path, and a kernel crash that wiped state during my nal Variant B attempt.
-Each one was solvable; together they ate a meaningful share of the milestone window.
-Plans forward.
-The plan is shaped by what I now know. First, nish Variant B end-to-end at
-max_model_len=16384, so I have a clean self-consistency number to compare against the starter on
-the full 100 and then on the full 1126. Second, run a fourth variant I have not yet tried, which
-I will call Variant D: use the starter MCQ prompt with starter max_tokens=32768, and the strict
-free-form prompt with starter max_tokens=32768. The Variant A MCQ collapse was caused by the
-lower max_tokens=8192 budget, not by the prompt itself, so Variant D removes that confound: the
-MCQ pipeline is identical to the starter and MCQ accuracy should match baseline, while free-form
-should pick up the +1.6 points from the strict prompt. The expected overall is roughly 62%. Third,
-run the full 1126 with the best conguration and submit to Kaggle, so the comparison is no longer
-subject to subset noise. If self-consistency on the full set still does not beat the starter, the nal
-report will say so directly. Time permitting, I want to try the same pipeline with Qwen3-4B-Instruct
-(the non-thinking variant) to see whether the thinking model is actually paying for itself at this
-scale, or whether the budget it consumes would do better split across more samples of a simpler
-model.
-Timeline.
- This week: nish the Variant B full run; run Variant D (starter MCQ + strict free-form,
-both at starter max_tokens); both on 100 questions, then on full 1126.
- Next week: Kaggle submission for the best conguration; light error analysis on a held-out
-100 questions to categorize remaining mistakes (truncation vs. genuine computation error vs.
-format).
- Following week: optional Qwen3-4B-Instruct comparison; nal gures and ablation table.
- Final report: writeup with full-set numbers, ablation, and error categories.
-LLM Usage
-I used Claude (Anthropic) as a coding and writing assistant.
-Specic uses: debugging vLLM
-environment errors (the DeepGEMM and accelerate issues described above), iterating on the
-system prompt wording, drafting parts of this report, and as a sounding board for deciding which
-experiment to run next. All design decisions, hyperparameter choices, experimental results, and the
-nal account of what worked and what did not were veried and edited by me. No model-generated
-text was copied without review.
-References
-[1] Qwen Team. Qwen3 Technical Report. 2024.
-6
-
-
---- milestone page 7 ---
-[2] Woosuk Kwon et al. Ecient Memory Management for Large Language Model Serving with
-PagedAttention. SOSP, 2023.
-[3] Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed H. Chi, Sharan Narang, Aakanksha
-Chowdhery, Denny Zhou. Self-Consistency Improves Chain of Thought Reasoning in Language
-Models. ICLR, 2023.
-[4] Tim Dettmers, Mike Lewis, Younes Belkada, Luke Zettlemoyer. LLM.int8(): 8-bit Matrix Mul-
-tiplication for Transformers at Scale. NeurIPS, 2022.
-7
-
-

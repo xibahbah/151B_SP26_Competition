@@ -1,169 +1,102 @@
-# CSE 151B Competition — Starter Code
+# CSE 151B Kaggle Competition Submission
 
-Open **`starter_code_cse151b_comp.ipynb`** to get started.
+Final code submission for the math reasoning Kaggle competition.
 
-The notebook covers environment setup, inference with Qwen3-4B-Thinking (INT8), and scoring against the public dataset.
+## Entry Point
 
-## Contents
+The required single entry point is:
 
-| File | Description |
-|---|---|
-| `starter_code_cse151b_comp.ipynb` | Main entry point |
-| `judger.py` | Response scoring logic |
-| `utils.py` | Utilities used by `judger.py` |
-| `data/public.jsonl` | Public dataset with ground-truth answers |
-| `results/` | Output JSONL files written at runtime |
+```python
+from run_inference import run_inference
 
-## FRQ-first workflow
-
-Install the RunPod environment:
-
-```bash
-pip install -r requirements-lora.txt
+run_inference(
+    data_path="data/private.jsonl",
+    output_csv="submission.csv",
+)
 ```
 
-Run a 20-question smoke test:
+This performs the complete pipeline end to end:
+
+1. Loads `Qwen/Qwen3-4B-Thinking-2507` with vLLM and bitsandbytes.
+2. Runs MCQ inference with the original baseline MCQ prompt and settings.
+3. Runs FRQ inference with the final concise FRQ prompt and settings.
+4. Applies deterministic FRQ answer repair/post-processing.
+5. Writes the Kaggle CSV with columns `id,response`.
+
+No LoRA or fine-tuned checkpoint is used in the final submission.
+
+## Setup
+
+Use a CUDA GPU environment. The final runs were performed on RunPod with:
+
+- GPU: NVIDIA A40, 48 GB VRAM
+- CUDA driver shown by RunPod: CUDA 12.8
+- Approximate full private-set inference time: 10-12 hours
+
+Install dependencies:
 
 ```bash
-python scripts/eval_frq_vllm.py \
-  --sample-size 20 \
-  --output results/frq_smoke.jsonl \
-  --errors results/frq_smoke_errors.jsonl
+pip install -r requirements.txt
 ```
 
-Run the full public FRQ baseline:
+The model weights are downloaded automatically from Hugging Face by vLLM on the
+first run and cached by the environment. No manually uploaded model weights are
+required.
 
-```bash
-python scripts/eval_frq_vllm.py \
-  --output results/frq_baseline_full.jsonl \
-  --errors results/frq_baseline_errors.jsonl
-```
+## Reproduce Submission
 
-Re-score saved generations without regenerating:
-
-```bash
-python scripts/rescore_frq_results.py \
-  --input results/frq_baseline_full.jsonl \
-  --output results/frq_baseline_full_rescored.jsonl \
-  --errors results/frq_baseline_errors.jsonl
-```
-
-Analyze the remaining FRQ failures:
-
-```bash
-python scripts/analyze_frq_errors.py \
-  --results results/frq_baseline_full_rescored.jsonl \
-  --examples results/frq_error_examples.jsonl \
-  --limit 3
-```
-
-Run the offline repair pass on saved FRQ outputs:
-
-```bash
-python scripts/repair_frq_outputs.py \
-  --input results/frq_baseline_full.jsonl \
-  --output results/frq_baseline_full_repaired.jsonl \
-  --errors results/frq_baseline_full_repaired_errors.jsonl \
-  --oracle-errors results/frq_baseline_full_oracle_errors.jsonl
-```
-
-Prepare local training data for SFT/LoRA:
-
-```bash
-python scripts/prepare_sft_data.py \
-  --input path/to/your_training_set.jsonl \
-  --output data/train_sft_frq.jsonl
-```
-
-Create a fixed public-FRQ holdout before LoRA experiments:
-
-```bash
-python scripts/split_public_frq_holdout.py \
-  --seed 151 \
-  --holdout-size 200 \
-  --train-output data/public_frq_train.jsonl \
-  --holdout-output data/public_frq_holdout.jsonl \
-  --holdout-ids-output data/public_frq_holdout_ids.json \
-  --sft-output data/public_frq_train_sft.jsonl
-```
-
-Prepare external FRQ-style math data without downloading the full dataset:
-
-```bash
-python scripts/prepare_external_math_sft.py \
-  --preset math \
-  --sample-size 2000 \
-  --assistant-mode final \
-  --min-level 3 \
-  --balanced-by-topic \
-  --output data/external_math_sft_2k.jsonl
-```
-
-For a larger reasoning dataset, stream a small sample from OpenR1:
-
-```bash
-python scripts/prepare_external_math_sft.py \
-  --preset openr1 \
-  --sample-size 2000 \
-  --assistant-mode final \
-  --output data/openr1_math_sft_2k.jsonl
-```
-
-Train the LoRA adapter:
-
-```bash
-python scripts/train_lora.py \
-  --train-file data/external_math_sft_2k.jsonl \
-  --output-dir outputs/qwen-frq-lora
-```
-
-Evaluate the LoRA adapter on the fixed holdout:
-
-```bash
-python scripts/eval_frq_vllm.py \
-  --lora-path outputs/qwen-frq-lora \
-  --ids-file data/public_frq_holdout_ids.json \
-  --output results/frq_lora_holdout.jsonl \
-  --errors results/frq_lora_holdout_errors.jsonl
-```
-
-## Controlled LoRA A/B
-
-Use this only for FRQ. MCQ should stay on the baseline vLLM path.
-
-The current public-FRQ baseline to beat is the repaired 4096-token run:
+Place the private dataset at:
 
 ```text
-results/frq_full_4096_v2_repaired_latest.jsonl
+data/private.jsonl
 ```
 
-Run Adapter A, the safer self-distill format LoRA:
+Run:
 
 ```bash
-bash scripts/run_controlled_lora_ab.sh prepare
-bash scripts/run_controlled_lora_ab.sh train-a
-tail -f results/train_lora_selfdistill_safe.log
-bash scripts/run_controlled_lora_ab.sh eval-a
-tail -f results/frq_lora_selfdistill_holdout.log
-bash scripts/run_controlled_lora_ab.sh repair-a
+python run_inference.py \
+  --data data/private.jsonl \
+  --output-csv submission.csv \
+  --results-dir results/private_run
 ```
 
-Only if Adapter A beats the baseline holdout, run Adapter B:
+For a long remote run, use:
 
 ```bash
-bash scripts/run_controlled_lora_ab.sh prepare-mixed
-bash scripts/run_controlled_lora_ab.sh train-b
-tail -f results/train_lora_mixed_safe.log
-bash scripts/run_controlled_lora_ab.sh eval-b
-tail -f results/frq_lora_mixed_holdout.log
-bash scripts/run_controlled_lora_ab.sh repair-b
+mkdir -p results/logs
+nohup python -u run_inference.py \
+  --data data/private.jsonl \
+  --output-csv submission.csv \
+  --results-dir results/private_run \
+  > results/logs/run_inference.log 2>&1 &
 ```
 
-Check active jobs:
+The same pipeline is also called from `starter_code_cse151b_comp.ipynb`.
 
-```bash
-bash scripts/run_controlled_lora_ab.sh status
-```
+## Final Hyperparameters
 
-Reject an adapter if the repaired holdout is below the baseline holdout. If it
-passes holdout, run full FRQ before trusting it.
+MCQ:
+
+- Model: `Qwen/Qwen3-4B-Thinking-2507`
+- Quantization/load format: `bitsandbytes`
+- Temperature: `0.6`
+- Top-p: `0.95`
+- Top-k: `20`
+- Max tokens: `32768`
+- Max model length: `16384`
+- GPU memory utilization: `0.50`
+
+FRQ:
+
+- Model: `Qwen/Qwen3-4B-Thinking-2507`
+- Quantization/load format: `bitsandbytes`
+- Temperature: `0.0`
+- Top-p: `1.0`
+- Top-k: `-1`
+- Max tokens: `4096`
+- Max model length: `8192`
+- Batch size: `5`
+- GPU memory utilization: `0.78`
+
+Post-processing is implemented in `scripts/repair_frq_outputs.py` and is called
+inside `run_inference()`.

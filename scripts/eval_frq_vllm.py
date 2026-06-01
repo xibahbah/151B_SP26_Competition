@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from frq_tools import postprocess_response, score_frq_item
 from judger import Judger
 from tqdm import tqdm
-from vllm import LLM, SamplingParams
 
 
 SYSTEM_PROMPT_MATH = """You are solving free-response math problems for an automatic grader.
@@ -89,7 +88,6 @@ def main() -> None:
     parser.add_argument("--output", default="results/frq_baseline_full.jsonl")
     parser.add_argument("--errors", default="results/frq_baseline_errors.jsonl")
     parser.add_argument("--model-id", default="Qwen/Qwen3-4B-Thinking-2507")
-    parser.add_argument("--lora-path", default=None)
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=-1, help="Use -1 for a fresh random sample seed.")
     parser.add_argument("--ids-file", default=None, help="JSON file containing item IDs to evaluate.")
@@ -116,6 +114,8 @@ def main() -> None:
         data = rng.sample(data, min(args.sample_size, len(data)))
     print(f"Sample seed: {sample_seed}")
 
+    from vllm import LLM, SamplingParams
+
     llm_kwargs = {
         "model": args.model_id,
         "quantization": "bitsandbytes",
@@ -127,9 +127,6 @@ def main() -> None:
         "max_num_seqs": 4,
         "max_num_batched_tokens": args.max_model_len,
     }
-    if args.lora_path:
-        llm_kwargs["enable_lora"] = True
-
     llm = LLM(**llm_kwargs)
     tokenizer = llm.get_tokenizer()
     sampling_params = SamplingParams(
@@ -142,12 +139,6 @@ def main() -> None:
         repetition_penalty=1.0,
         n=args.num_generations,
     )
-
-    lora_request = None
-    if args.lora_path:
-        from vllm.lora.request import LoRARequest
-
-        lora_request = LoRARequest("frq_lora", 1, args.lora_path)
 
     prompts = []
     for item in data:
@@ -165,7 +156,7 @@ def main() -> None:
     for start in tqdm(range(0, len(prompts), args.batch_size), desc="Generating"):
         batch = prompts[start : start + args.batch_size]
         batch_items = data[start : start + args.batch_size]
-        outputs = llm.generate(batch, sampling_params=sampling_params, lora_request=lora_request)
+        outputs = llm.generate(batch, sampling_params=sampling_params)
         for item, output in zip(batch_items, outputs):
             for candidate_idx, candidate in enumerate(output.outputs):
                 generated.append((item, candidate_idx, candidate.text.strip()))

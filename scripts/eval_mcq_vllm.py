@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 from tqdm import tqdm
-from vllm import LLM, SamplingParams
 
 
 SYSTEM_PROMPT_MCQ = (
@@ -75,6 +74,8 @@ def main() -> None:
         rng = random.Random(sample_seed)
         data = rng.sample(data, min(args.sample_size, len(data)))
     print(f"Sample seed: {sample_seed}")
+
+    from vllm import LLM, SamplingParams
 
     llm = LLM(
         model=args.model_id,

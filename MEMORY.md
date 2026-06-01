@@ -1,1 +1,0 @@
-- [Run jobs remotely on RunPod](run-jobs-remotely-on-runpod.md) — execute GPU eval/train over SSH, do not hand back paste commands
