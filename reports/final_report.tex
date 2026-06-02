@@ -1,0 +1,283 @@
+\documentclass{article}
+
+\PassOptionsToPackage{numbers, compress}{natbib}
+\usepackage[preprint]{neurips_2024}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage{float}
+\DeclareMathOperator{\R}{\mathbb{R}}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{hyperref}
+\usepackage{wrapfig}
+\usepackage[capitalize,noabbrev]{cleveref}
+\RequirePackage{doi}
+\usepackage{xcolor}
+\usepackage{xcolor, colortbl}
+\definecolor{darkblue}{rgb}{0.19, 0.19, 0.62}
+\hypersetup{
+  colorlinks = true,
+  citecolor  = darkblue,
+  filecolor  = darkblue,
+  urlcolor   = darkblue,
+}
+
+\title{
+CSE 151B/251B Final Report\\
+Math Reasoning Inference with vLLM, Structured Prompting, and Deterministic Answer Repair
+}
+
+\author{%
+  Keith Gong\\
+  CSE 151B/251B Kaggle Competition\\
+  University of California, San Diego\\
+  \texttt{x4gong@ucsd.edu}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This project studies automatic solution generation for mixed multiple-choice and free-response mathematics problems. The final system uses the base model \texttt{Qwen/Qwen3-4B-Thinking-2507}, served with vLLM and bitsandbytes quantization on a single NVIDIA A40 GPU. Instead of relying on fine-tuning, the final approach combines three components: preserving the strong baseline multiple-choice pipeline, using a concise free-response prompt that controls answer count and numerical precision, and applying a deterministic repair layer that normalizes or replaces malformed final answers when the model output contains a recoverable answer. On the public free-response set, the repair pipeline improved full-set free-response accuracy from 430/751 (57.26\%) to 544/751 (72.44\%). On the Kaggle public leaderboard, the final submitted CSV reached 0.674 after several staged improvements from earlier submissions of 0.650, 0.653, 0.667, and 0.671. The private leaderboard score was not available at report-writing time. The final public GitHub repository is \href{https://github.com/xibahbah/151B_SP26_Competition}{https://github.com/xibahbah/151B\_SP26\_Competition}.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+\paragraph{Problem Definition.}
+The task is to build an inference system for a Kaggle-style math reasoning competition. Each input item is a natural-language math problem. Some items are multiple-choice questions (MCQ), where the desired output is a single answer letter, while others are free-response questions (FRQ), where the output may contain one or more numeric, symbolic, or categorical answers corresponding to \texttt{[ANS]} blanks. The required submission is a CSV file with columns \texttt{id,response}. The \texttt{response} field must contain the model's full generated text, including its final boxed answer; the evaluator then extracts and judges the final answer.
+
+This is not a standard supervised classification task with a small fixed label set. The input space includes algebra, statistics, probability, geometry, trigonometry, finance, exponential models, word problems, and multi-part answer formats. The output space is heterogeneous: a correct answer can be a letter, integer, decimal, interval, expression, ordered list, or a mixture of these. Therefore, the project is best viewed as controlled mathematical text generation followed by answer extraction. Given a problem $x_i$, the system generates a response $r_i$ using a language model and then optionally transforms that response through deterministic post-processing $g(r_i, x_i)$ before writing it to the CSV.
+
+\paragraph{Problem Significance.}
+Reliable mathematical reasoning systems are useful for tutoring, automated grading, scientific computing assistance, and decision support. A student-facing system must not only reason correctly, but also present answers in the format that a grader or downstream tool expects. This competition emphasizes that second requirement. Many model outputs contained the right calculation in the body of the response but failed because the final boxed answer was missing, had the wrong answer count, included units, used commas as thousands separators, or rounded inconsistently.
+
+The project therefore targets a realistic bottleneck for deploying large language models (LLMs): correctness is jointly determined by reasoning and interface discipline. A model that computes a value but wraps the wrong substring in \texttt{\textbackslash boxed\{\}} still receives zero credit. In real applications, these failures look like malformed API outputs, brittle JSON, or ambiguous spreadsheet formulas. Improving answer extraction and final formatting is a practical contribution, not merely a cosmetic one.
+
+\paragraph{Technical Challenge.}
+The project was difficult for five reasons. First, the dataset mixes MCQ and FRQ examples, and changes that improve one type can hurt the other. In early experiments, modifying MCQ prompting and decoding reduced MCQ accuracy, so the final system preserves the original MCQ path. Second, the FRQ answer space is broad: some questions require exact fractions, some require decimal precision, and others require multiple ordered values. Third, long-thinking models can over-generate. Increasing maximum output tokens from 4096 to 6144 allowed more reasoning, but it also increased rambling and sometimes placed the correct answer before a later contradictory answer. Fourth, the system had to run on a single A40 with finite memory and time; full private inference took approximately 10--12 hours. Fifth, evaluation was brittle: the free-response judger is sensitive to formatting, answer ordering, and extraction, so engineering work on post-processing mattered almost as much as model selection.
+
+\paragraph{Contributions.}
+The final solution makes four main contributions:
+\begin{itemize}
+    \item \textbf{Type-specific inference.} The pipeline separates MCQ and FRQ inference. It preserves the starter-style MCQ prompt and high-token decoding while using a stricter FRQ prompt and deterministic generation for free-response items.
+    \item \textbf{A concise FRQ prompt with structural constraints.} The FRQ prompt explicitly counts \texttt{[ANS]} blanks, enforces one final boxed answer, bans thousands separators, and tells the model to stop after the final answer.
+    \item \textbf{A deterministic repair layer.} The repair module extracts last boxed answers, answer markers, numeric expressions, labelled values, compact option letters, and known symbolic forms. It also contains template-specific solvers for recurring math patterns.
+    \item \textbf{A reproducible single-entry submission pipeline.} The final repository exposes \texttt{run\_inference()} and a notebook wrapper that execute the whole pipeline end-to-end: model loading, MCQ inference, FRQ inference, repair, merge, and CSV export.
+\end{itemize}
+
+\section{Related Work}
+\label{sec:relatedwork}
+
+\paragraph{Large language models for mathematical reasoning.}
+Transformers \citep{vaswani2017attention} enabled modern large language models by scaling attention-based sequence modeling. GPT-style models demonstrated that sufficiently large language models can solve many tasks from prompts alone \citep{brown2020language}. Mathematical reasoning requires more than memorized facts: models must decompose questions, execute symbolic or numerical operations, and produce a final answer that is extractable by an evaluator. Chain-of-thought prompting showed that asking models to write intermediate reasoning can improve multi-step performance \citep{wei2022cot}. However, this project also found a limitation of unconstrained reasoning: long answers can bury or overwrite the correct final answer.
+
+\paragraph{Sampling, self-consistency, and serving.}
+Self-consistency samples multiple reasoning paths and selects an answer by agreement \citep{wang2023selfconsistency}. I explored a limited version of this idea with multi-generation runs on previously missed FRQ examples. It was expensive and did not produce enough reliable gains under the time budget, so it did not become the final approach. Efficient serving mattered more. vLLM's PagedAttention-style memory management improves throughput and allows large models to run more efficiently during inference \citep{kwon2023vllm}. The final system used vLLM because full-set inference with Hugging Face Transformers was too slow for repeated experimentation. I also tested LoRA-style fine-tuning \citep{hu2022lora}, but the adapters overfit formatting or mismatched external data and were rejected.
+
+\section{Methods}
+\label{sec:methods}
+
+\paragraph{Problem Setting.}
+Let the dataset be $D=\{(x_i, t_i)\}_{i=1}^{n}$, where $x_i$ is a math problem and $t_i \in \{\mathrm{MCQ}, \mathrm{FRQ}\}$ indicates its type. For public examples, gold answers $y_i$ are available and can be used for evaluation; for private examples, only $x_i$ and type information are available. The model produces a text response
+\[
+    r_i \sim p_\theta(\cdot \mid s(t_i), u(x_i)),
+\]
+where $s(t_i)$ is a type-specific system prompt and $u(x_i)$ is a user prompt containing the problem and, for MCQ, the answer choices. The final submitted response is
+\[
+    \hat{r}_i =
+    \begin{cases}
+    h_{\mathrm{mcq}}(r_i) & \text{if } t_i=\mathrm{MCQ},\\
+    h_{\mathrm{frq}}(r_i, x_i) & \text{if } t_i=\mathrm{FRQ}.
+    \end{cases}
+\]
+For MCQ, $h_{\mathrm{mcq}}$ is intentionally light and keeps the model response trace with a boxed letter. For FRQ, $h_{\mathrm{frq}}$ is a deterministic repair function that tries to produce a valid final boxed answer while preserving the raw response in the CSV. Accuracy is measured by the competition's answer extractor and judge, not by BLEU or text similarity.
+
+The public dataset contains 1126 total examples: 375 MCQ and 751 FRQ. The private set used for submission contains 943 examples: 300 MCQ and 643 FRQ. Because the private labels are hidden, model development relied on the public labels, random public subsets, and full public FRQ validation.
+
+\paragraph{Idea Summary.}
+The key idea is that the problem is partly a reasoning task and partly an answer-interface task. Early experiments showed that the base Qwen thinking model already solved many problems in its reasoning trace. A large fraction of errors came from output formatting: missing boxes, wrong answer count, overly verbose final answers, numbers with units, or correct intermediate values not selected as the last boxed expression. Instead of trying to fine-tune the model into a new solver, I focused on making the inference and extraction path more reliable.
+
+The final system is deliberately conservative. MCQ performance was strong in the baseline setup, so I did not keep prompt changes that lowered MCQ accuracy. FRQ performance was improved through a stricter prompt and a repair layer. This approach has risks: deterministic repairs can overfit public templates, and template-specific rules may not transfer to unseen private questions. I mitigated this by prioritizing generic repairs first, using template solvers only when the problem text matched a clear mathematical pattern, and preserving the raw response trace so the grader could still extract an answer if the appended repair was ignored.
+
+\paragraph{Method Description.}
+The final pipeline has four stages, shown in \cref{fig:pipeline}. First, it loads the private dataset and splits examples by whether they contain answer choices. Second, it runs MCQ inference with the original baseline prompt. Third, it runs FRQ inference with a concise prompt that includes answer-count and precision directives. Fourth, it repairs FRQ responses and merges MCQ and FRQ outputs into the required CSV.
+
+\begin{figure}[h]
+\centering
+\fbox{
+\begin{minipage}{0.92\linewidth}
+\centering
+\textbf{Private JSONL} $\rightarrow$ split into MCQ/FRQ $\rightarrow$
+\begin{tabular}{cc}
+\textbf{MCQ vLLM path} & \textbf{FRQ vLLM path} \\
+baseline prompt, high max tokens & concise prompt, deterministic decoding \\
+boxed letter extraction & boxed answer repair and template solvers
+\end{tabular}
+$\rightarrow$ merge by id $\rightarrow$ \textbf{\texttt{submission.csv}}
+\end{minipage}
+}
+\caption{Final inference pipeline. MCQ and FRQ are run separately so that GPU memory is released between phases and so each type can use its own prompt and decoding settings.}
+\label{fig:pipeline}
+\end{figure}
+
+For MCQ, the system prompt is: read the problem and choices, select the single best answer, and output only the letter inside \texttt{\textbackslash boxed\{\}}. Options are rendered as A, B, C, etc. This was kept close to the starter notebook because experiments showed that adding extra reasoning instructions hurt MCQ.
+
+For FRQ, the system prompt tells the model to solve efficiently, write exactly one boxed answer, respect the number and order of \texttt{[ANS]} blanks, avoid units unless required, avoid thousands commas, prefer exact expressions, and obey rounding instructions. The user prompt also adds a gold-free structural directive: if a problem has $k$ \texttt{[ANS]} blanks, output exactly $k$ comma-separated values inside a single box. This targets the largest FRQ formatting failures without using labels.
+
+The repair layer is implemented in \texttt{scripts/repair\_frq\_outputs.py}. It generates candidate final answers from multiple sources: existing post-processing, last boxed answer, explicit ``answer'' markers, right-hand sides after equals signs, labelled values, compact option letters, numeric-token extraction, SymPy simplification, tuple wrapping, and problem-template solvers. Candidates are ranked conservatively. A replacement is selected only when a rule is confident enough to prefer it over the original final box.
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Baselines}
+\label{sec:baselines}
+
+I compared several baselines and alternatives:
+\begin{itemize}
+    \item \textbf{Starter vLLM baseline.} Qwen3-4B-Thinking with vLLM, bitsandbytes quantization, and starter-style prompts.
+    \item \textbf{Modified MCQ prompts.} Variants that added more detailed reasoning instructions. These were rejected because they reduced MCQ performance.
+    \item \textbf{Concise FRQ prompting.} A prompt that forces answer count, one boxed answer, and exact formatting.
+    \item \textbf{Longer-token FRQ generation.} FRQ max tokens increased from 4096 to 6144. This was rejected because the model rambled more and public FRQ accuracy fell.
+    \item \textbf{LoRA/SFT adapters.} Public self-distillation and external math data adapters. These were rejected because held-out or sampled FRQ accuracy did not reliably beat the repaired base system.
+    \item \textbf{Deterministic repair system.} The final selected method, combining base vLLM generation with generic and template-specific answer repair.
+\end{itemize}
+
+\subsection{Evaluation}
+\label{sec:evaluation}
+
+The only metric optimized was answer accuracy under the competition judger. For public FRQ experiments, I used \texttt{Judger.auto\_judge()} and reported the fraction of examples judged correct. For Kaggle submissions, I used the public leaderboard score. I did not optimize text similarity, explanation quality, or latency except as practical constraints. This choice matches the competition: the grader extracts final answers from the submitted response trace.
+
+\subsection{Implementation details}
+\label{sec:implementation_details}
+
+All final inference ran on RunPod with a single NVIDIA A40 GPU with 48 GB VRAM and CUDA 12.8. The final full private run took approximately 10--12 hours. The repository now exposes one entry point:
+\[
+\texttt{run\_inference(data\_path=\"data/private.jsonl\", output\_csv=\"submission.csv\")}.
+\]
+The function runs the complete pipeline and writes the required CSV. The final notebook simply imports and calls this function.
+
+\begin{table}[h]
+\caption{Final inference hyperparameters. MCQ keeps the original high-token baseline behavior, while FRQ uses deterministic decoding and a shorter context to reduce rambling.}
+\label{tab:hparams}
+\centering
+\begin{tabular}{lll}
+\toprule
+Setting & MCQ & FRQ \\
+\midrule
+Model & \multicolumn{2}{c}{\texttt{Qwen/Qwen3-4B-Thinking-2507}} \\
+Serving & \multicolumn{2}{c}{vLLM, bitsandbytes quantization/load format} \\
+Temperature & 0.6 & 0.0 \\
+Top-p & 0.95 & 1.0 \\
+Top-k & 20 & -1 \\
+Max output tokens & 32768 & 4096 \\
+Max model length & 16384 & 8192 \\
+Batch size & all prompts or configured batch & 5 \\
+GPU memory utilization & 0.50 & 0.78 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The optimizer settings for LoRA experiments were not part of the final submission, but they informed the decision to avoid fine-tuning. I tried QLoRA/LoRA with rank 8--16, alpha 16--32, dropout 0.05, learning rates around $3\cdot 10^{-5}$ to $5\cdot 10^{-5}$, batch size 1, gradient accumulation 16, and maximum length 4096. Public-only self-distillation improved formatting on a small holdout after repair but did not provide a robust enough gain. External OpenR1/math-style training was mismatched with the competition's short final-answer format and was also rejected.
+
+\subsection{Results}
+\label{sec:results}
+
+\paragraph{Result 1: public FRQ repair substantially improved answer accuracy.}
+\Cref{tab:frq_progress} summarizes the public FRQ development. The most important result is that deterministic repair improved the full public FRQ set from 430/751 (57.26\%) to 544/751 (72.44\%). This gain came from format recovery and template-specific solving rather than changing the base model.
+
+\begin{table}[h]
+\caption{Public FRQ development trajectory. The final selected public FRQ repair version reached 544/751, with an oracle ceiling of 546/751 for the available candidate set.}
+\label{tab:frq_progress}
+\centering
+\begin{tabular}{lcc}
+\toprule
+System variant & Public FRQ correct & Accuracy \\
+\midrule
+Base FRQ generation / early repair baseline & 430/751 & 57.26\% \\
+First stronger repair pass & 463/751 & 61.65\% \\
+Template repair v3--v5 & 515/751 & 68.58\% \\
+Final template repair v6/v10 & 544/751 & 72.44\% \\
+Available repair oracle ceiling & 546/751 & 72.70\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The error analysis after the final repair showed 425 raw-correct examples, 119 examples corrected after post-processing, 109 remaining expression-format errors, 64 wrong-math errors, 28 wrong-answer-count errors, and 6 precision/rounding errors. This breakdown supports the main design decision: many remaining gains were available from interface repair, but the largest unsolved category after repair was genuine mathematical error.
+
+\paragraph{Result 2: leaderboard gains came from preserving MCQ and improving FRQ.}
+\Cref{tab:kaggle_progress} shows the staged public leaderboard improvements. The final public score was 0.674. A key empirical finding was that MCQ should be left mostly unchanged. When MCQ prompts were modified, performance dropped; when MCQ was restored to the original vLLM baseline, the system became more stable. FRQ improvements then drove the remaining gains.
+
+\begin{table}[h]
+\caption{Kaggle public leaderboard progression. Scores are public leaderboard scores observed during the final submission process.}
+\label{tab:kaggle_progress}
+\centering
+\begin{tabular}{ll}
+\toprule
+Submission stage & Public score \\
+\midrule
+Initial full-response submission & 0.650 \\
+Targeted safe version & 0.653 \\
+Cleaned last-shot submission & 0.667 \\
+Improved final-answer repair submission & 0.671 \\
+Final aggressive-but-safe submission & 0.674 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The gap between public FRQ repair accuracy (72.44\%) and Kaggle public score (0.674) is expected because the leaderboard combines MCQ and FRQ, evaluates on a hidden split, and may contain a different distribution from public FRQ validation. The final system was still the strongest observed submission.
+
+\subsection{Ablations}
+\label{sec:ablations}
+
+\begin{table}[h]
+\caption{Ablation-style findings. Not every experiment was run under perfectly identical conditions because of time and GPU constraints, but each influenced the final design.}
+\label{tab:ablations}
+\centering
+\begin{tabular}{p{0.24\linewidth}p{0.56\linewidth}p{0.14\linewidth}}
+\toprule
+Change & Observation & Decision \\
+\midrule
+Modify MCQ prompts & More detailed MCQ reasoning instructions reduced MCQ performance relative to the baseline path. & Rejected \\
+FRQ structural prompt & Counting \texttt{[ANS]} blanks and forcing one boxed answer reduced wrong-answer-count and formatting failures. & Kept \\
+Increase FRQ max tokens to 6144 & Public full FRQ generation fell to 422/751 after post-processing, worse than the 4096-token repaired baseline. & Rejected \\
+Public self-distill LoRA & A 200-example holdout reached 110/200 after repair, not enough to justify replacing the base model. & Rejected \\
+External math LoRA & External solution-style data mismatched the desired concise answer format and degraded sampled FRQ behavior. & Rejected \\
+Deterministic repair layer & Improved full public FRQ from 430/751 to 544/751. & Kept \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The main ablation lesson is that more model freedom was not always better. Longer generation and extra reasoning often increased contradictions. Fine-tuning was also not automatically helpful. The strongest gains came from constraining the output interface and using deterministic recovery for cases where the model's trace already contained enough information.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Achievements.}
+The project produced a complete, reproducible inference system that can be run from a notebook or from a terminal command. The public FRQ pipeline improved by 15.18 percentage points over the 430/751 baseline, reaching 544/751. The final Kaggle public score reached 0.674. The final repository is much cleaner than the exploratory codebase: it contains one entry point, one notebook, three inference/repair scripts, dependency pins, and a README explaining setup and runtime.
+
+\paragraph{Bottlenecks and Mitigation.}
+The first bottleneck was GPU memory. vLLM with bitsandbytes solved most memory issues, but MCQ and FRQ had to be run separately to avoid out-of-memory failures and to free KV cache between phases. The second bottleneck was generation time. A full private run took most of a day, so I used random 200-example FRQ samples and public full-set rescoring to iterate quickly. The third bottleneck was model overthinking. The Qwen thinking model often continued debating after reaching the answer. I mitigated this with a concise prompt and by reducing FRQ max tokens back to 4096. The fourth bottleneck was format brittleness. I addressed it with a repair module that extracted and normalized answer candidates from the model trace.
+
+\paragraph{Lessons Learned.}
+The biggest lesson is that leaderboard performance for reasoning models depends heavily on the boundary between language generation and evaluation. A mathematically correct paragraph can still fail if the last boxed answer is malformed. Another lesson is that fine-tuning is not automatically beneficial under a short project timeline. The LoRA experiments consumed useful time and sometimes made the model worse because the training targets were mismatched with the competition's exact output requirements. A final lesson is that preserving a strong baseline matters. I initially tried to improve both MCQ and FRQ, but the best path was to keep MCQ unchanged and focus engineering effort on FRQ.
+
+With more time, I would build a cleaner validation protocol with a held-out public split before doing any template-specific repair. I would also train a smaller answer-extraction model or verifier that chooses among candidate final answers from the trace, rather than relying on hand-ranked deterministic rules. Finally, I would implement symbolic solvers for broader classes of algebra, statistics, and geometry templates so that the repair layer generalizes beyond the public set.
+
+\paragraph{Team Responsibilities.}
+Keith Gong handled the project end-to-end: environment setup on RunPod, vLLM migration, prompt design, public FRQ evaluation, error analysis, repair module engineering, LoRA/SFT experiments, Kaggle submission packaging, README cleanup, and final notebook integration. The final code exposes the required \texttt{run\_inference()} function and is organized so that graders can reproduce the submission from the notebook or command line.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
+

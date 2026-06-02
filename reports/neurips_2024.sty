@@ -1,0 +1,21 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{neurips_2024}[Minimal local fallback style for course report]
+
+\DeclareOption{preprint}{}
+\DeclareOption{nonatbib}{}
+\ProcessOptions\relax
+
+\RequirePackage{natbib}
+\RequirePackage[margin=1in]{geometry}
+\RequirePackage{times}
+\RequirePackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{CSE 151B/251B Final Report}
+\rhead{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
